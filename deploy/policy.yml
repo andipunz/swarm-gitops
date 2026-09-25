@@ -1,0 +1,31 @@
+# What repos may deploy onto the Swarm. Baked into the image and used by both
+# the controller and `swarm-gitops check` in CI, so devs see the same result
+# on their pull request that the controller would give them after merge.
+
+# Images must come from here (checked after normalising "nginx" to
+# "docker.io/library/nginx"). Remove the list to allow every registry.
+image_prefixes:
+  - ghcr.io/bergwacht-bayern/
+  - docker.io/library/        # official images (postgres, redis, nginx, ...)
+
+# External networks a stack may join. "*" = every environment.
+external_networks:
+  "*": [traefik-public]
+  # prod: [traefik-public, monitoring]
+
+# Host paths that may be bind-mounted. Empty = no bind mounts at all.
+bind_mounts: []
+
+# Publishing ports bypasses Traefik; keep false.
+allow_published_ports: false
+
+# Linux capabilities that may be added (without CAP_ prefix).
+cap_add: []
+
+# Every secret must come from your secrets plugin.
+secret_driver: bergwacht/secrets
+
+max_replicas: 10
+
+# Local volumes may mount these network filesystems via driver_opts.
+volume_mount_types: [nfs, nfs4, cifs]

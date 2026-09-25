@@ -1,0 +1,4 @@
+services:
+  app:
+    environment:
+      LOG_LEVEL: debug

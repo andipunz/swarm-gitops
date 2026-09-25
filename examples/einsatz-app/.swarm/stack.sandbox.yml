@@ -1,0 +1,10 @@
+# Sandbox: one stack per branch sandbox/<name>, reachable at <stack>.sandbox.…
+services:
+  app:
+    deploy:
+      labels:
+        traefik.http.routers.${STACK}.rule: Host(`${STACK}.sandbox.bergwacht-bayern.de`)
+  db:
+    deploy:
+      resources:
+        limits: {memory: 256M}

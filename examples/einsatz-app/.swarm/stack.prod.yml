@@ -1,0 +1,6 @@
+services:
+  app:
+    deploy:
+      replicas: 3
+      resources:
+        limits: {memory: 512M}

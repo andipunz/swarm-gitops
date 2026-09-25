@@ -1,0 +1,52 @@
+# Base stack shared by all environments. Plain compose v3 as used by
+# `docker stack deploy`. Variables: everything from the env's vars file plus
+# ${ENV}, ${GIT_SHA}, ${GIT_REF}, ${STACK}, ${REPO}.
+services:
+  app:
+    image: ghcr.io/bergwacht-bayern/einsatz-app:${IMAGE_TAG:-main}
+    environment:
+      APP_ENV: ${ENV}
+      DATABASE_HOST: db
+      DATABASE_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    configs:
+      - source: app_config
+        target: /etc/einsatz/config.yml
+    networks: [default, traefik-public]
+    deploy:
+      replicas: 1
+      update_config:
+        order: start-first
+        failure_action: rollback     # failed rollouts roll back and are reported as failed
+        monitor: 20s
+      resources:
+        limits: {memory: 256M}
+      labels:
+        # ${STACK} in label keys is replaced by the controller (compose itself does not).
+        traefik.enable: "true"
+        traefik.http.routers.${STACK}.rule: Host(`${DOMAIN}`)
+        traefik.http.routers.${STACK}.entrypoints: websecure
+        traefik.http.routers.${STACK}.tls.certresolver: le
+        traefik.http.services.${STACK}.loadbalancer.server.port: "8080"
+
+  db:
+    image: postgres:17
+    environment:
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets: [db_password]
+    volumes: [db:/var/lib/postgresql/data]
+
+configs:
+  app_config:
+    file: ./config/app.yml          # content changes roll the service automatically
+
+secrets:
+  db_password:
+    driver: bergwacht/secrets      # values come from the secrets plugin, never from git
+
+volumes:
+  db:
+
+networks:
+  traefik-public:
+    external: true

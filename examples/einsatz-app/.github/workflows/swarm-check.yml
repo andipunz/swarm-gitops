@@ -1,0 +1,16 @@
+# Validates .swarm/ on every PR with the same rules the controller uses,
+# so policy problems show up before merge instead of after.
+name: swarm check
+on:
+  pull_request:
+    paths: [".swarm/**"]
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate .swarm
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            ghcr.io/bergwacht-bayern/swarm-gitops:latest \
+            check -repo "${{ github.event.repository.name }}" -policy /etc/swarm-gitops/policy.yml .swarm

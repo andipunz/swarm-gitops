@@ -1,0 +1,57 @@
+# The controller itself. Deployed once by an admin:
+#
+#   docker node update --label-add swarm-gitops=true <manager-node>
+#   docker secret create swarm_gitops_app_key   ./github-app.private-key.pem
+#   docker secret create swarm_gitops_registry  ./registry-config.json   # {"auths":{"ghcr.io":{"auth":"base64(user:token)"}}}
+#   docker stack deploy -c deploy/stack.yml swarm-gitops
+#
+# Start with DRY_RUN=true: everything is scanned, rendered, checked and
+# reported to GitHub, but nothing is deployed or removed.
+services:
+  controller:
+    image: ghcr.io/bergwacht-bayern/swarm-gitops:latest
+    environment:
+      GITHUB_ORG: bergwacht-bayern
+      GITHUB_APP_ID: "000000"                     # <- your App ID
+      GITHUB_APP_KEY_FILE: /run/secrets/swarm_gitops_app_key
+      ENV_PROPERTY: swarm-environments            # org custom property (multi select)
+      REQUIRE_PROTECTED: prod                     # envs that need a protected branch
+      SCAN_INTERVAL: 1m
+      IMAGE_INTERVAL: 2m                          # 0 disables automatic image updates
+      ROLLOUT_TIMEOUT: 5m
+      PRUNE_ENABLED: "true"
+      PRUNE_CONFIRMATIONS: "2"
+      MAX_PRUNE: "3"
+      DOCKER_CONFIG: /docker-config               # registry auth for pulls and digest checks
+      DRY_RUN: "true"                             # <- set to "false" once the reports look right
+      # POLICY_FILE: /etc/swarm-gitops/policy.yml (default, baked into the image)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - data:/data
+    secrets:
+      - swarm_gitops_app_key
+      - source: swarm_gitops_registry
+        target: /docker-config/config.json
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+          - node.labels.swarm-gitops == true      # keeps /data on one node
+      update_config:
+        order: stop-first
+      restart_policy:
+        condition: any
+        delay: 10s
+      resources:
+        limits:
+          memory: 256M
+
+volumes:
+  data:
+
+secrets:
+  swarm_gitops_app_key:
+    external: true
+  swarm_gitops_registry:
+    external: true

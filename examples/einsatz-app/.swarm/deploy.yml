@@ -1,0 +1,17 @@
+# Which environments this repo has and which branch deploys to each.
+# Environments must also be enabled by an org admin (custom property
+# "swarm-environments"), otherwise GitHub shows "not enabled".
+environments:
+  prod:
+    ref: main                      # protected branch required
+    files: [stack.yml, stack.prod.yml]
+    vars: prod.env
+    url: https://einsatz.bergwacht-bayern.de
+  staging:
+    ref: develop
+    files: [stack.yml, stack.staging.yml]
+    vars: staging.env
+    url: https://einsatz.staging.bergwacht-bayern.de
+  sandbox:
+    ref: "sandbox/*"               # one stack per branch, removed when the branch is deleted
+    # files default to [stack.yml, stack.sandbox.yml (if present)]
