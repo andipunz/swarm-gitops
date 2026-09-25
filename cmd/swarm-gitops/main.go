@@ -7,6 +7,8 @@
 //	swarm-gitops pause|resume <stack>  stop/start deploys, image updates and removal
 //	swarm-gitops adopt <stack>         allow taking over an existing unmanaged stack
 //	swarm-gitops approve-prune         allow a blocked mass removal once
+//	swarm-gitops reset-binds <folder>  forget the writable-mount history of a bind folder
+//	swarm-gitops prepare <specs>       (internal) create/verify bind folders on a node
 //	swarm-gitops check [dir]           validate .swarm/ locally or in CI (needs docker CLI)
 package main
 
@@ -16,6 +18,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -29,6 +32,7 @@ import (
 	"github.com/bergwacht-bayern/swarm-gitops/internal/controller"
 	"github.com/bergwacht-bayern/swarm-gitops/internal/gh"
 	"github.com/bergwacht-bayern/swarm-gitops/internal/policy"
+	"github.com/bergwacht-bayern/swarm-gitops/internal/prepare"
 	"github.com/bergwacht-bayern/swarm-gitops/internal/registry"
 	"github.com/bergwacht-bayern/swarm-gitops/internal/render"
 	"github.com/bergwacht-bayern/swarm-gitops/internal/spec"
@@ -59,8 +63,15 @@ func main() {
 			usage()
 		}
 		err = simple(socket, "/v1/"+cmd+"?stack="+args[0])
+	case "reset-binds":
+		if len(args) != 1 {
+			usage()
+		}
+		err = simple(socket, "/v1/reset-binds?root="+url.QueryEscape(args[0]))
 	case "check":
 		err = check(args)
+	case "prepare":
+		err = prepareCmd(args)
 	default:
 		usage()
 	}
@@ -80,6 +91,7 @@ func usage() {
   resume <stack>        undo pause
   adopt <stack>         allow taking over an existing unmanaged stack
   approve-prune         allow a blocked mass removal once
+  reset-binds <folder>  forget the writable-mount history of a bind folder (after checking it)
   check [-env e] [-policy f] [dir]   validate a .swarm directory (default ./.swarm)`)
 	os.Exit(2)
 }
@@ -261,5 +273,25 @@ func check(args []string) error {
 	if failed {
 		return fmt.Errorf("check failed")
 	}
+	return nil
+}
+
+// prepareCmd runs inside the per-node job: create/verify bind folders.
+func prepareCmd(args []string) error {
+	fs := flag.NewFlagSet("prepare", flag.ExitOnError)
+	owner := fs.String("owner", "", "uid:gid for created folders")
+	_ = fs.Parse(args)
+	var specs []prepare.Spec
+	for _, a := range fs.Args() {
+		s, err := prepare.ParseSpec(a)
+		if err != nil {
+			return err
+		}
+		specs = append(specs, s)
+	}
+	if err := prepare.Run(prepare.HostRoot, specs, *owner); err != nil {
+		return err
+	}
+	fmt.Printf("prepared %d folder(s)\n", len(specs))
 	return nil
 }

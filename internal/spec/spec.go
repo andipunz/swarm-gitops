@@ -20,6 +20,8 @@ type Env struct {
 	Files []string `yaml:"files"` // compose files relative to .swarm/, merged in order
 	Vars  string   `yaml:"vars"`  // optional dotenv file relative to .swarm/
 	URL   string   `yaml:"url"`   // optional environment URL shown in GitHub
+	// Owner ("uid:gid") for bind mount folders the controller creates.
+	BindOwner string `yaml:"bind_owner"`
 }
 
 // File is .swarm/deploy.yml.
@@ -28,6 +30,8 @@ type File struct {
 }
 
 var envNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,19}$`)
+
+var ownerRe = regexp.MustCompile(`^[0-9]{1,10}:[0-9]{1,10}$`)
 
 // Parse parses and validates deploy.yml.
 func Parse(data []byte) (*File, error) {
@@ -46,6 +50,9 @@ func Parse(data []byte) (*File, error) {
 		}
 		if e.Ref == "" {
 			return nil, fmt.Errorf("deploy.yml: environment %q has no ref", name)
+		}
+		if e.BindOwner != "" && !ownerRe.MatchString(e.BindOwner) {
+			return nil, fmt.Errorf("deploy.yml: environment %q: bind_owner must be \"uid:gid\" (numbers)", name)
 		}
 		if _, err := path.Match(e.Ref, ""); err != nil {
 			return nil, fmt.Errorf("deploy.yml: environment %q: bad ref pattern: %v", name, err)

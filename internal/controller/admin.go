@@ -109,3 +109,18 @@ func (c *Controller) ApprovePrune() error {
 	c.Trigger()
 	return err
 }
+
+// ResetBinds forgets the writable bind history of a folder root (after an
+// admin checked it for planted symlinks).
+func (c *Controller) ResetBinds(root string) error {
+	var found bool
+	err := c.st.Update(func(d *state.Data) {
+		_, found = d.BindHistory[root]
+		delete(d.BindHistory, root)
+	})
+	if err == nil && !found {
+		return fmt.Errorf("no bind history for %s", root)
+	}
+	c.Trigger()
+	return err
+}

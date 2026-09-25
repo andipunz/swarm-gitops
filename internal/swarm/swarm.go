@@ -176,10 +176,15 @@ func (d *Docker) Tasks(ctx context.Context, service string) ([]Task, error) {
 	return tasks, nil
 }
 
-// Logs returns the last lines of a service's logs.
+// Logs returns the last lines of a service's logs (stdout and stderr of the
+// containers; docker prints the latter on its own stderr).
 func (d *Docker) Logs(ctx context.Context, service string, lines int) string {
-	out, err := d.run(ctx, 15*time.Second, "service", "logs", "--no-task-ids", "--tail", fmt.Sprint(lines), service)
-	if err != nil {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "docker", "service", "logs", "--no-task-ids", "--tail", fmt.Sprint(lines), service)
+	cmd.Env = d.Env
+	out, err := cmd.CombinedOutput()
+	if err != nil && len(out) == 0 {
 		return err.Error()
 	}
 	return string(out)
@@ -321,4 +326,151 @@ func (d *Docker) attachLogs(ctx context.Context, reports []ServiceReport) {
 			reports[i].Logs = d.Logs(ctx, reports[i].Name, 30)
 		}
 	}
+}
+
+// AllServices returns every service on the Swarm (managed or not).
+func (d *Docker) AllServices(ctx context.Context) ([]Service, error) {
+	out, err := d.run(ctx, 30*time.Second, "service", "ls", "-q")
+	if err != nil {
+		return nil, err
+	}
+	ids := strings.Fields(string(out))
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out, err = d.run(ctx, 60*time.Second, append([]string{"service", "inspect"}, ids...)...)
+	if err != nil {
+		return nil, err
+	}
+	var svcs []Service
+	return svcs, json.Unmarshal(out, &svcs)
+}
+
+// PrepJob creates/verifies bind folders on all nodes matching Constraints.
+type PrepJob struct {
+	Constraints []string
+	Prefixes    []string // static folders mounted into the job at /host<prefix>
+	Specs       []string // prepare.Spec strings
+}
+
+// Prepare runs each job as a global-job service with the controller image and
+// waits until it finished on every eligible node. The error lists per-node failures.
+func (d *Docker) Prepare(ctx context.Context, stack, image, owner string, jobs []PrepJob, timeout time.Duration) error {
+	if d.DryRun || len(jobs) == 0 {
+		return nil
+	}
+	var failures []string
+	for i, job := range jobs {
+		name := fmt.Sprintf("sg-prep-%s-%d", stack, i)
+		if len(name) > 63 {
+			name = name[:63]
+		}
+		_, _ = d.run(ctx, 30*time.Second, "service", "rm", name) // leftover from a crash
+		args := []string{"service", "create", "--detach", "--quiet", "--name", name, "--mode", "global-job",
+			"--restart-condition", "none", "--with-registry-auth", "--label", "swarm-gitops.prep=" + stack}
+		for _, c := range job.Constraints {
+			args = append(args, "--constraint", c)
+		}
+		for _, p := range job.Prefixes {
+			args = append(args, "--mount", "type=bind,source="+p+",target=/host"+p)
+		}
+		args = append(args, image, "prepare")
+		if owner != "" {
+			args = append(args, "--owner", owner)
+		}
+		args = append(args, job.Specs...)
+		if _, err := d.run(ctx, time.Minute, args...); err != nil {
+			return err
+		}
+		failures = append(failures, d.waitJob(ctx, name, timeout)...)
+		_, _ = d.run(ctx, 30*time.Second, "service", "rm", name)
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("%s", strings.Join(failures, "\n"))
+	}
+	return nil
+}
+
+func (d *Docker) waitJob(ctx context.Context, name string, timeout time.Duration) []string {
+	deadline := time.Now().Add(timeout)
+	for {
+		tasks, err := d.Tasks(ctx, name)
+		if err != nil {
+			return []string{err.Error()}
+		}
+		pending := len(tasks) == 0
+		var failures []string
+		for _, t := range tasks {
+			switch {
+			case strings.HasPrefix(t.CurrentState, "Complete"):
+			case strings.HasPrefix(t.CurrentState, "Failed"), strings.HasPrefix(t.CurrentState, "Rejected"):
+				msg := t.Error
+				if i := strings.Index(msg, "bind source path does not exist: "); i >= 0 {
+					msg = fmt.Sprintf("base folder %s does not exist on this node (an admin must create it once)", strings.Trim(msg[i+len("bind source path does not exist: "):], `"`))
+				}
+				failures = append(failures, fmt.Sprintf("node %s: %s", t.Node, msg))
+			default:
+				pending = true
+			}
+		}
+		if !pending {
+			if len(failures) > 0 {
+				// the job's own message is more useful than "non-zero exit";
+				// logs of a finished task can take a moment to appear
+				for i := 0; i < 5; i++ {
+					if logs := strings.TrimSpace(d.Logs(ctx, name, 50)); logs != "" {
+						return []string{cleanJobLogs(logs)}
+					}
+					time.Sleep(time.Second)
+				}
+			}
+			return failures
+		}
+		if time.Now().After(deadline) {
+			if len(tasks) == 0 {
+				return []string{"no node matches the placement constraints"}
+			}
+			var nodes []string
+			for _, t := range tasks {
+				if !strings.HasPrefix(t.CurrentState, "Complete") {
+					nodes = append(nodes, t.Node+" ("+t.CurrentState+")")
+				}
+			}
+			return append(failures, "timed out preparing folders on: "+strings.Join(nodes, ", "))
+		}
+		select {
+		case <-ctx.Done():
+			return []string{ctx.Err().Error()}
+		case <-time.After(time.Second):
+		}
+	}
+}
+
+// RemovePrepLeftovers removes prepare jobs left behind by a crash.
+func (d *Docker) RemovePrepLeftovers(ctx context.Context) {
+	out, err := d.run(ctx, 30*time.Second, "service", "ls", "-q", "--filter", "label=swarm-gitops.prep")
+	if err != nil {
+		return
+	}
+	for _, id := range strings.Fields(string(out)) {
+		_, _ = d.mutate(ctx, 30*time.Second, "service", "rm", id)
+	}
+}
+
+// cleanJobLogs turns "job.0@node    | error: msg" lines into "node: msg".
+func cleanJobLogs(logs string) string {
+	var lines []string
+	for _, l := range strings.Split(logs, "\n") {
+		prefix, msg, ok := strings.Cut(l, "|")
+		if !ok {
+			lines = append(lines, l)
+			continue
+		}
+		node := strings.TrimSpace(prefix)
+		if i := strings.LastIndex(node, "@"); i >= 0 {
+			node = node[i+1:]
+		}
+		lines = append(lines, "node "+node+": "+strings.TrimPrefix(strings.TrimSpace(msg), "error: "))
+	}
+	return strings.Join(lines, "\n")
 }

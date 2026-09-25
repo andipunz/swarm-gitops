@@ -6,7 +6,6 @@ package policy
 import (
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,8 +24,10 @@ type Policy struct {
 	ImagePrefixes []string `yaml:"image_prefixes"`
 	// External networks a stack may join, per environment; "*" applies to all.
 	ExternalNetworks map[string][]string `yaml:"external_networks"`
-	// Host path prefixes allowed as bind mount sources. Empty = no bind mounts.
-	BindMounts []string `yaml:"bind_mounts"`
+	// Folders that may be bind-mounted. Empty = no bind mounts.
+	BindMounts []BindRule `yaml:"bind_mounts"`
+	// Traefik routing rules (hostnames per environment, reservations).
+	Traefik TraefikPolicy `yaml:"traefik"`
 	// Allow published ports (ingress or host mode).
 	AllowPublishedPorts bool `yaml:"allow_published_ports"`
 	// Capabilities that may be added.
@@ -69,14 +70,27 @@ func Load(file string) (*Policy, error) {
 // Context describes the stack being checked.
 type Context struct {
 	Stack   string
+	Repo    string
 	Env     string
 	WorkDir string // absolute directory the .swarm files were materialised in
+	// HostClaims maps hostnames already routed by Traefik to the stack (or
+	// service) using them. nil skips the ownership check (e.g. in CI).
+	HostClaims map[string]string
+}
+
+// Report is the result of a policy check.
+type Report struct {
+	Violations []string
+	Binds      []Bind   // bind mounts, for folder preparation on the nodes
+	Hosts      []string // hostnames this stack routes
 }
 
 type checker struct {
-	p   *Policy
-	ctx Context
-	v   []string
+	p     *Policy
+	ctx   Context
+	v     []string
+	binds []Bind
+	hosts map[string]bool
 }
 
 func (c *checker) add(where, format string, a ...any) {
@@ -137,9 +151,9 @@ func checkPaths(c *checker, where string, n any) {
 	}
 }
 
-// Check validates the rendered stack and returns human readable violations.
-func (p *Policy) Check(stack map[string]any, ctx Context) []string {
-	c := &checker{p: p, ctx: ctx}
+// Check validates the rendered stack.
+func (p *Policy) Check(stack map[string]any, ctx Context) Report {
+	c := &checker{p: p, ctx: ctx, hosts: map[string]bool{}}
 	for k := range stack {
 		switch k {
 		case "version", "services", "networks", "volumes", "configs", "secrets":
@@ -172,7 +186,13 @@ func (p *Policy) Check(stack map[string]any, ctx Context) []string {
 	for _, name := range sortedKeys(secrets) {
 		c.secret(name, asMap(secrets[name]))
 	}
-	return c.v
+	c.checkBindNesting()
+	r := Report{Violations: c.v, Binds: c.binds}
+	for h := range c.hosts {
+		r.Hosts = append(r.Hosts, h)
+	}
+	sort.Strings(r.Hosts)
+	return r
 }
 
 var deniedServiceKeys = map[string]string{
@@ -222,15 +242,23 @@ func (c *checker) service(name string, s map[string]any) {
 			c.add(fmt.Sprintf("%s.cap_add[%d]", w, i), "capability %q is not allowed", cs)
 		}
 	}
+	deploy := asMap(s["deploy"])
+	var constraints []string
+	for _, cs := range asList(asMap(deploy["placement"])["constraints"]) {
+		if str, ok := cs.(string); ok {
+			constraints = append(constraints, str)
+		}
+	}
+	sort.Strings(constraints)
 	for i, v := range asList(s["volumes"]) {
-		c.serviceVolume(fmt.Sprintf("%s.volumes[%d]", w, i), v)
+		c.serviceVolume(name, constraints, fmt.Sprintf("%s.volumes[%d]", w, i), v)
 	}
 	if ports := asList(s["ports"]); len(ports) > 0 && !c.p.AllowPublishedPorts {
 		c.add(w+".ports", "published ports are not allowed, expose the service through Traefik labels")
 	}
 	checkLabels(c, w+".labels", s["labels"])
-	deploy := asMap(s["deploy"])
 	checkLabels(c, w+".deploy.labels", deploy["labels"])
+	c.traefik(w, s["labels"], deploy["labels"])
 	if c.p.MaxReplicas > 0 {
 		if r, ok := toInt(deploy["replicas"]); ok && r > c.p.MaxReplicas {
 			c.add(w+".deploy.replicas", "%d replicas exceed the limit of %d", r, c.p.MaxReplicas)
@@ -245,8 +273,9 @@ func (c *checker) service(name string, s map[string]any) {
 	}
 }
 
-func (c *checker) serviceVolume(w string, v any) {
+func (c *checker) serviceVolume(service string, constraints []string, w string, v any) {
 	var typ, src string
+	readOnly := false
 	switch vv := v.(type) {
 	case string:
 		parts := strings.Split(vv, ":")
@@ -259,22 +288,21 @@ func (c *checker) serviceVolume(w string, v any) {
 		} else {
 			typ = "volume"
 		}
+		if len(parts) > 2 {
+			for _, o := range strings.Split(parts[2], ",") {
+				readOnly = readOnly || o == "ro"
+			}
+		}
 	case map[string]any:
 		typ, _ = vv["type"].(string)
 		src, _ = vv["source"].(string)
+		readOnly = isTrue(vv["read_only"])
 	}
 	switch typ {
 	case "volume", "tmpfs", "":
 		return
 	case "bind":
-		clean := path.Clean(src)
-		for _, allowed := range c.p.BindMounts {
-			a := path.Clean(allowed)
-			if clean == a || strings.HasPrefix(clean, strings.TrimSuffix(a, "/")+"/") {
-				return
-			}
-		}
-		c.add(w, "bind mount of host path %q is not allowed", src)
+		c.bind(service, constraints, w, src, readOnly)
 	default:
 		c.add(w, "mount type %q is not allowed", typ)
 	}
@@ -366,6 +394,8 @@ func labelKeys(labels any) []string {
 	switch l := labels.(type) {
 	case map[string]any:
 		keys = sortedKeys(l)
+	case map[string]string:
+		keys = sortedStringKeys(l)
 	case []any:
 		for _, e := range l {
 			if s, ok := e.(string); ok {

@@ -65,6 +65,7 @@ environments:
     files: [stack.yml, stack.prod.yml] # merged in order (default: stack.yml + stack.<env>.yml if present)
     vars: prod.env                     # optional variables file
     url: https://einsatz.example.org   # shown in GitHub
+    bind_owner: "1000:1000"            # optional owner of bind folders the controller creates
   staging:
     ref: develop
   sandbox:
@@ -90,10 +91,11 @@ Compose variables come from the env's `vars` file plus these built-ins:
 | `${GIT_SHA}` | deployed commit |
 | `${GIT_REF}` | branch |
 | `${REPO}` | repository name |
+| `${STACK_DATA}` | the stack's own bind folder, e.g. `/srv/swarm/einsatz-app/prod` |
 
 Compose never interpolates label **keys**. The controller replaces `${STACK}`
 and `${ENV}` in label keys, so Traefik router names stay unique per stack:
-`traefik.http.routers.${STACK}.rule: Host(\`${DOMAIN}\`)`.
+`` traefik.http.routers.${STACK}.rule: Host(`${DOMAIN}`) ``.
 
 ### Feedback
 
@@ -126,6 +128,57 @@ by digest (`app:1.4.2@sha256:…`); pinned images are never touched.
 Use `update_config.failure_action: rollback`, so a broken image rolls back
 automatically and is reported as failed.
 
+### Bind mounts
+
+Each stack has its own folder on the nodes, `${STACK_DATA}`
+(`/srv/swarm/<repo>/<env>` by default). Mount anything below it:
+
+```yaml
+    volumes:
+      - ${STACK_DATA}/uploads:/app/uploads
+      - ${STACK_DATA}/postgres:/var/lib/postgresql/data
+```
+
+- Missing folders are **created automatically** on every node where the
+  service may run, before the deploy (owner from `bind_owner`, else root).
+- Folders outside the allowed ones (policy `bind_mounts`) are refused, as are
+  other stacks' folders.
+- Two rules stop symlink tricks. Docker follows symlinks when it mounts a
+  folder, so a container could otherwise reach the host:
+  - **No nesting:** a writable mount may not contain another mount's folder.
+  - **No subfolders of former writable mounts:** once `${STACK_DATA}` itself
+    was mounted writable, mounting `${STACK_DATA}/x` later is refused, because
+    the container could have replaced `x` with a symlink. If this blocks you,
+    ask an admin (`reset-binds`).
+  - Symlinks in a folder's path are always refused on the node.
+- Relative bind mounts (`./data:/data`) are not supported; use `${STACK_DATA}/data`.
+
+### Hostnames (Traefik)
+
+```yaml
+    deploy:
+      labels:
+        traefik.enable: "true"
+        traefik.http.routers.${STACK}.rule: Host(`app.bergwacht-bayern.de`)
+        traefik.http.routers.${STACK}.entrypoints: websecure
+        traefik.http.services.${STACK}.loadbalancer.server.port: "8080"
+```
+
+- **A hostname belongs to the stack that routes it first.** Every other stack
+  gets a failed check "hostname … is already used by stack …". This includes
+  stacks not managed by swarm-gitops (Portainer, infrastructure).
+- Hostnames must fit the environment, e.g. prod `*.bergwacht-bayern.de`,
+  sandbox `*.sandbox.bergwacht-bayern.de`. Admins can reserve hostnames for a
+  repository.
+- Every router needs a rule with `Host()` (`HostSNI()` for TCP). `||`, `!`,
+  `HostRegexp` and rules without a host are refused, because they could catch
+  other stacks' traffic. Combine further matchers with `&&`, e.g.
+  `` Host(`a`) && PathPrefix(`/api`) ``.
+- Router, service and middleware names must start with the stack name. Use
+  `${STACK}` or `${STACK}-api`.
+- Routers may only point to the stack's own services (no `api@internal`).
+- Traefik labels belong under `deploy.labels`, not container `labels`.
+
 ### Secrets
 
 Secrets are never in git. Declare them with the secrets plugin as driver:
@@ -152,7 +205,8 @@ Named volumes are **never** removed automatically.
 
 | Rule | Why |
 |---|---|
-| Bind mounts (incl. `docker.sock`), `driver_opts` bind tricks | host takeover |
+| Bind mounts outside the stack's folder (incl. `docker.sock`), nested or symlinked binds, `driver_opts` bind tricks | host takeover |
+| Hostnames of other stacks or outside the env's domains, catch-all rules, foreign router names | stealing traffic |
 | `privileged`, `cap_add`, `network_mode`, `pid`, `ipc`, `devices`, `security_opt` | host takeover |
 | Published `ports` | bypasses Traefik, port conflicts |
 | Images outside `ghcr.io/bergwacht-bayern/` and official images | supply chain |
@@ -195,11 +249,18 @@ every repo that deploys to prod. Otherwise prod reports "Branch is not protected
 ### 4. Deploy the controller
 
 ```sh
+mkdir -p /srv/swarm                    # on EVERY node: base of the bind folders (policy bind_mounts)
 docker node update --label-add swarm-gitops=true <manager>
 docker secret create swarm_gitops_app_key ./app.private-key.pem
 docker secret create swarm_gitops_registry ./registry-config.json   # {"auths":{"ghcr.io":{"auth":"<base64 user:token>"}}}
 docker stack deploy -c deploy/stack.yml swarm-gitops
 ```
+
+Bind folders are created by a short Swarm job (`mode: global-job`, named
+`sg-prep-<stack>-N`). It runs `PREP_IMAGE` (the controller image) on every
+node the service may be placed on, with only the base folder (e.g.
+`/srv/swarm`) mounted. If a node is down, its folders get created on the next
+deploy.
 
 Start with `DRY_RUN=true`: everything is scanned, rendered, checked and
 reported on GitHub (as "Dry run: would deploy"), but nothing on the Swarm
@@ -217,6 +278,10 @@ swarm-gitops adopt einsatz-app-prod
 
 Then remove the stack from Portainer's Git settings, so the two don't fight.
 
+Hostnames routed by Portainer stacks are respected automatically: nobody
+else can claim them. When moving bind-mount data, copy it to
+`/srv/swarm/<repo>/<env>/…` first.
+
 ### 6. CLI
 
 The admin API is a Unix socket inside the container, not reachable over the network:
@@ -231,6 +296,7 @@ sg pause <stack>             # no deploys, image updates or removal
 sg resume <stack>
 sg adopt <stack>             # take over an unmanaged stack
 sg approve-prune             # allow a blocked mass removal once
+sg reset-binds /srv/swarm/app/prod   # after checking the folder for symlinks: forget its writable-mount history
 ```
 
 ### 7. Secrets plugin
@@ -267,6 +333,8 @@ The plugin should only hand out secrets under a path matching repo + env
 | `CONCURRENCY` | `4` | parallel deployments |
 | `POLICY_FILE` | `/etc/swarm-gitops/policy.yml` | |
 | `DOCKER_CONFIG` | – | dir with `config.json` for registry auth |
+| `PREP_IMAGE` | `ghcr.io/bergwacht-bayern/swarm-gitops:latest` | image of the per-node folder job |
+| `PREP_TIMEOUT` | `2m` | |
 | `DRY_RUN` | `false` | |
 | `LOG_LEVEL` | `info` | `debug` |
 
@@ -295,6 +363,9 @@ On top of that:
 
 ## Operations
 
+- **Hostname check:** the claims are read live from all Swarm services
+  right before `docker stack deploy`, under a lock, so two stacks can't claim
+  the same hostname at the same time.
 - **State:** Swarm service labels hold what runs (repo, env, commit, spec
   hash). `/data/state.json` holds only processed commits, pauses and adoptions.
   Losing it is harmless: each stack then gets one "No changes" check.
@@ -313,9 +384,11 @@ On top of that:
 - Environments deploy from **branches**, not tags.
 - Registry auth reads `auths` from `config.json`; credential helpers are not
   supported.
-- The policy does not stop one stack from claiming another stack's hostname
-  in a Traefik `Host()` rule. If that matters, add a per-environment domain
-  rule to the policy.
+- Hostname ownership is "first come, first served" among running stacks.
+  To give a hostname to a repo before it deploys, reserve it in the policy.
+- Bind-mount history (`/data/state.json`) starts empty. Folders mounted
+  writable by stacks before swarm-gitops (e.g. adopted Portainer stacks) are
+  not in it; check them for symlinks when adopting.
 - One controller instance, pinned to one manager (`/data` is a local volume).
 
 ## Development
@@ -323,7 +396,7 @@ On top of that:
 ```sh
 go test ./...                                   # unit tests (render tests need the docker CLI)
 docker swarm init                               # once
-internal/controller/testdata/web/build.sh      # test images, no registry needed
+internal/controller/testdata/web/build.sh      # test images (web + prepare job), no registry needed
 go test -tags integration -v ./internal/controller/   # end-to-end on a real Swarm
 go run ./cmd/swarm-gitops check -policy deploy/policy.yml examples/einsatz-app/.swarm
 ```

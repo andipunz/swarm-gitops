@@ -24,7 +24,7 @@ const baseStack = `services:
     deploy:
       labels:
         traefik.enable: "true"
-        traefik.http.routers.${STACK}.rule: Host(${STACK}.example.org)
+        traefik.http.routers.${STACK}.rule: Host("${STACK}.example.org")
 configs:
   nginx:
     file: ./config/nginx.conf
@@ -102,7 +102,7 @@ func TestRenderOK(t *testing.T) {
 			t.Errorf("label %s = %v, want %s", k, labels[k], want)
 		}
 	}
-	if labels["traefik.http.routers.web-prod.rule"] != "Host(web-prod.example.org)" {
+	if labels["traefik.http.routers.web-prod.rule"] != `Host("web-prod.example.org")` {
 		t.Errorf("${STACK} not replaced in label key/value: %v", labels)
 	}
 	if r := web["deploy"].(map[string]any)["replicas"]; r != 3 {

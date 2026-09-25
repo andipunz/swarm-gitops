@@ -50,6 +50,10 @@ func Serve(ctx context.Context, socket string, c *controller.Controller) error {
 	mux.HandleFunc("POST /v1/pause", stackCmd(func(ctx context.Context, s string) error { return c.SetPaused(ctx, s, true) }, "%s paused"))
 	mux.HandleFunc("POST /v1/resume", stackCmd(func(ctx context.Context, s string) error { return c.SetPaused(ctx, s, false) }, "%s resumed"))
 	mux.HandleFunc("POST /v1/adopt", stackCmd(func(_ context.Context, s string) error { return c.Adopt(s) }, "%s may now be taken over"))
+	mux.HandleFunc("POST /v1/reset-binds", func(w http.ResponseWriter, r *http.Request) {
+		root := r.URL.Query().Get("root")
+		reply(w, map[string]string{"result": "bind history of " + root + " cleared"}, c.ResetBinds(root))
+	})
 	mux.HandleFunc("POST /v1/approve-prune", func(w http.ResponseWriter, r *http.Request) {
 		reply(w, map[string]string{"result": "pending removals approved for the next scan"}, c.ApprovePrune())
 	})

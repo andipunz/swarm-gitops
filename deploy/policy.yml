@@ -13,8 +13,31 @@ external_networks:
   "*": [traefik-public]
   # prod: [traefik-public, monitoring]
 
-# Host paths that may be bind-mounted. Empty = no bind mounts at all.
-bind_mounts: []
+# Folders that may be bind-mounted. {repo}, {env} and {stack} are filled in
+# per stack, so every stack only reaches its own folder. The part before the
+# first placeholder (here /srv/swarm) must exist on every node; everything
+# below it is created automatically before a deploy (create: true).
+# ${STACK_DATA} in compose files points to the first "create" folder.
+bind_mounts:
+  - path: /srv/swarm/{repo}/{env}
+    create: true
+  # - path: /srv/shared/certs        # shared, read-only for everybody
+  #   read_only: true
+  # - path: /mnt/nas/einsatz         # only for one repository
+  #   repos: [einsatz-app]
+
+# Traefik: which hostnames a stack may route. On top of this, a hostname
+# belongs to the stack that routes it first (including stacks not managed
+# by swarm-gitops); nobody else can use it.
+traefik:
+  hosts:
+    prod: [bergwacht-bayern.de, "*.bergwacht-bayern.de"]
+    staging: ["*.staging.bergwacht-bayern.de"]
+    sandbox: ["*.sandbox.bergwacht-bayern.de"]
+  reserved:                          # hostname or *.pattern -> the only repository allowed
+    bergwacht-bayern.de: website
+    www.bergwacht-bayern.de: website
+  entrypoints: [websecure]
 
 # Publishing ports bypasses Traefik; keep false.
 allow_published_ports: false

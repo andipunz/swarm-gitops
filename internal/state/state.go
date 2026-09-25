@@ -23,6 +23,8 @@ type Data struct {
 	LastScan       time.Time         `json:"last_scan"`
 	LastScanError  string            `json:"last_scan_error"`
 	LastImageCheck time.Time         `json:"last_image_check"`
+	// BindHistory: bind rule root -> sources that were ever mounted writable.
+	BindHistory map[string][]string `json:"bind_history"`
 }
 
 // Store is a mutex-protected, file-backed state.
@@ -62,6 +64,9 @@ func (s *Store) init() {
 	}
 	if s.d.PendingRemoval == nil {
 		s.d.PendingRemoval = map[string]int{}
+	}
+	if s.d.BindHistory == nil {
+		s.d.BindHistory = map[string][]string{}
 	}
 	if s.d.Orphaned == nil {
 		s.d.Orphaned = map[string]string{}

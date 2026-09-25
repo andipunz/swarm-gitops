@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/bergwacht-bayern/swarm-gitops/internal/config"
 	"github.com/bergwacht-bayern/swarm-gitops/internal/gh"
 	"github.com/bergwacht-bayern/swarm-gitops/internal/policy"
+	"github.com/bergwacht-bayern/swarm-gitops/internal/prepare"
 	"github.com/bergwacht-bayern/swarm-gitops/internal/registry"
 	"github.com/bergwacht-bayern/swarm-gitops/internal/render"
 	"github.com/bergwacht-bayern/swarm-gitops/internal/state"
@@ -50,6 +52,8 @@ type Controller struct {
 	trigger chan struct{}
 	locks   sync.Map // stack -> *sync.Mutex
 
+	claimsMu sync.Mutex // held while checking hostnames + docker stack deploy
+
 	cacheMu  sync.Mutex
 	trees    map[string][]gh.TreeEntry // immutable, keyed by tree oid
 	blobs    map[string][]byte         // immutable, keyed by blob sha
@@ -67,6 +71,7 @@ func New(cfg *config.Config, git Git, docker *swarm.Docker, reg *registry.Resolv
 
 // Run scans until ctx is cancelled. Image updates run in their own loop.
 func (c *Controller) Run(ctx context.Context) {
+	c.docker.RemovePrepLeftovers(ctx)
 	if c.cfg.ImageInterval > 0 {
 		go c.imageLoop(ctx)
 	}
@@ -331,13 +336,24 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 		r.error(err)
 		return
 	}
+	claims, err := c.hostClaims(ctx, t.Stack)
+	if err != nil {
+		r.infraError(err)
+		return
+	}
 	res, err := render.Render(ctx, render.Input{
 		Stack: t.Stack, Repo: t.Repo, Env: t.Env, GitHubEnv: t.GitHubEnv, Ref: t.Branch.Name, Commit: commit,
 		URL: t.EnvCfg.URL, WorkDir: dir, Files: t.Files, Optional: t.Optional, VarsFile: t.EnvCfg.Vars, Policy: c.pol,
+		HostClaims: claims,
 	})
 	if err != nil {
 		r.error(err)
 		return
+	}
+	if len(res.Violations) == 0 {
+		var history map[string][]string
+		c.st.View(func(d *state.Data) { history = copyHistory(d.BindHistory) })
+		res.Violations = policy.CheckBindHistory(res.Binds, history)
 	}
 	if len(res.Violations) > 0 {
 		r.fail(fmt.Sprintf("%d policy violation(s)", len(res.Violations)),
@@ -354,10 +370,33 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 		return
 	}
 	r.startDeployment(redeploy)
-	if err := c.docker.Deploy(ctx, t.Stack, res.Path); err != nil {
+	if err := c.docker.Prepare(ctx, t.Stack, c.cfg.PrepImage, t.EnvCfg.BindOwner, prepJobs(res.Binds), c.cfg.PrepTimeout); err != nil {
+		r.fail("Bind folders could not be prepared", "The stack was **not deployed**:\n\n```\n"+err.Error()+"\n```", "")
+		return
+	}
+	// Hostnames: re-check against the live Swarm while holding the lock, so
+	// two stacks can't claim the same hostname concurrently.
+	c.claimsMu.Lock()
+	if conflict := c.hostConflicts(ctx, t.Stack, res.Hosts); conflict != "" {
+		c.claimsMu.Unlock()
+		r.fail("Hostname already in use", conflict, "")
+		return
+	}
+	err = c.docker.Deploy(ctx, t.Stack, res.Path)
+	c.claimsMu.Unlock()
+	if err != nil {
 		r.fail("docker stack deploy failed", "```\n"+err.Error()+"\n```", "")
 		return
 	}
+	_ = c.st.Update(func(d *state.Data) {
+		for root, srcs := range policy.WritableSources(res.Binds) {
+			for _, src := range srcs {
+				if !contains(d.BindHistory[root], src) {
+					d.BindHistory[root] = append(d.BindHistory[root], src)
+				}
+			}
+		}
+	})
 	if redeploy && currentSpec == res.SpecHash {
 		after, _ := c.docker.StackServices(ctx, t.Stack)
 		for _, s := range after {
@@ -379,6 +418,86 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 		r.done("failure", "Rollout failed", summary, text)
 	}
 	c.cleanWorkdirs(t.Stack, commit)
+}
+
+// hostClaims maps every hostname routed on the Swarm (by any service, managed
+// or not) to its stack, excluding the given stack.
+func (c *Controller) hostClaims(ctx context.Context, exclude string) (map[string]string, error) {
+	svcs, err := c.docker.AllServices(ctx)
+	if err != nil {
+		return nil, err
+	}
+	claims := map[string]string{}
+	for _, s := range svcs {
+		owner := s.Namespace()
+		if owner == "" {
+			owner = "service " + s.Spec.Name
+		} else {
+			owner = "stack " + owner
+		}
+		if s.Namespace() == exclude {
+			continue
+		}
+		for _, h := range policy.HostsFromLabels(s.Spec.Labels) {
+			if _, taken := claims[h]; !taken {
+				claims[h] = owner
+			}
+		}
+	}
+	return claims, nil
+}
+
+func (c *Controller) hostConflicts(ctx context.Context, stack string, hosts []string) string {
+	if len(hosts) == 0 {
+		return ""
+	}
+	claims, err := c.hostClaims(ctx, stack)
+	if err != nil {
+		return "could not verify hostnames: " + err.Error()
+	}
+	var msgs []string
+	for _, h := range hosts {
+		if owner, ok := claims[h]; ok {
+			msgs = append(msgs, fmt.Sprintf("`%s` is already used by %s", h, owner))
+		}
+	}
+	return strings.Join(msgs, "\n")
+}
+
+// prepJobs groups bind folders by placement constraints: one job per group.
+func prepJobs(binds []policy.Bind) []swarm.PrepJob {
+	byKey := map[string]*swarm.PrepJob{}
+	var keys []string
+	for _, b := range binds {
+		key := strings.Join(b.Constraints, "\x00")
+		j := byKey[key]
+		if j == nil {
+			j = &swarm.PrepJob{Constraints: b.Constraints}
+			byKey[key] = j
+			keys = append(keys, key)
+		}
+		if !contains(j.Prefixes, b.Prefix) {
+			j.Prefixes = append(j.Prefixes, b.Prefix)
+		}
+		spec := prepare.Spec{Prefix: b.Prefix, Path: b.Source, Create: b.Create}.String()
+		if !contains(j.Specs, spec) {
+			j.Specs = append(j.Specs, spec)
+		}
+	}
+	sort.Strings(keys)
+	var jobs []swarm.PrepJob
+	for _, k := range keys {
+		jobs = append(jobs, *byKey[k])
+	}
+	return jobs
+}
+
+func copyHistory(h map[string][]string) map[string][]string {
+	res := make(map[string][]string, len(h))
+	for k, v := range h {
+		res[k] = append([]string(nil), v...)
+	}
+	return res
 }
 
 func (c *Controller) cleanWorkdirs(stack, keep string) {

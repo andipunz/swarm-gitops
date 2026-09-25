@@ -9,6 +9,9 @@ services:
       DATABASE_HOST: db
       DATABASE_PASSWORD_FILE: /run/secrets/db_password
     secrets: [db_password]
+    volumes:
+      # ${STACK_DATA} = /srv/swarm/einsatz-app/<env>; created automatically on the nodes
+      - ${STACK_DATA}/uploads:/app/uploads
     configs:
       - source: app_config
         target: /etc/einsatz/config.yml
@@ -23,6 +26,8 @@ services:
         limits: {memory: 256M}
       labels:
         # ${STACK} in label keys is replaced by the controller (compose itself does not).
+        # Router/service names must start with the stack name; the hostname must be
+        # allowed for the environment and not be used by any other stack.
         traefik.enable: "true"
         traefik.http.routers.${STACK}.rule: Host(`${DOMAIN}`)
         traefik.http.routers.${STACK}.entrypoints: websecure
@@ -34,7 +39,8 @@ services:
     environment:
       POSTGRES_PASSWORD_FILE: /run/secrets/db_password
     secrets: [db_password]
-    volumes: [db:/var/lib/postgresql/data]
+    volumes:
+      - ${STACK_DATA}/postgres:/var/lib/postgresql/data
 
 configs:
   app_config:
@@ -43,9 +49,6 @@ configs:
 secrets:
   db_password:
     driver: bergwacht/secrets      # values come from the secrets plugin, never from git
-
-volumes:
-  db:
 
 networks:
   traefik-public:

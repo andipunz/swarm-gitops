@@ -1,6 +1,7 @@
 # The controller itself. Deployed once by an admin:
 #
 #   docker node update --label-add swarm-gitops=true <manager-node>
+#   mkdir -p /srv/swarm                    # on EVERY node: base folder for bind mounts (see policy.yml)
 #   docker secret create swarm_gitops_app_key   ./github-app.private-key.pem
 #   docker secret create swarm_gitops_registry  ./registry-config.json   # {"auths":{"ghcr.io":{"auth":"base64(user:token)"}}}
 #   docker stack deploy -c deploy/stack.yml swarm-gitops
@@ -23,6 +24,7 @@ services:
       PRUNE_CONFIRMATIONS: "2"
       MAX_PRUNE: "3"
       DOCKER_CONFIG: /docker-config               # registry auth for pulls and digest checks
+      PREP_IMAGE: ghcr.io/bergwacht-bayern/swarm-gitops:latest  # runs on the nodes to create bind folders (keep = image above)
       DRY_RUN: "true"                             # <- set to "false" once the reports look right
       # POLICY_FILE: /etc/swarm-gitops/policy.yml (default, baked into the image)
     volumes:

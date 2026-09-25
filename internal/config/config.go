@@ -29,6 +29,8 @@ type Config struct {
 	Socket           string        // SOCKET
 	DockerConfig     string        // DOCKER_CONFIG (dir with config.json for registry auth)
 	DryRun           bool          // DRY_RUN: render, check and report, but never touch the Swarm
+	PrepImage        string        // PREP_IMAGE: image running `swarm-gitops prepare` on the nodes
+	PrepTimeout      time.Duration // PREP_TIMEOUT
 }
 
 // FromEnv loads the configuration.
@@ -43,6 +45,7 @@ func FromEnv() (*Config, error) {
 		PolicyFile:       os.Getenv("POLICY_FILE"),
 		Socket:           env("SOCKET", "/run/swarm-gitops/api.sock"),
 		DockerConfig:     os.Getenv("DOCKER_CONFIG"),
+		PrepImage:        env("PREP_IMAGE", "ghcr.io/bergwacht-bayern/swarm-gitops:latest"),
 	}
 	var err error
 	if c.AppID, err = strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64); err != nil {
@@ -60,6 +63,7 @@ func FromEnv() (*Config, error) {
 		{&c.ScanInterval, "SCAN_INTERVAL", "1m", false},
 		{&c.ImageInterval, "IMAGE_INTERVAL", "2m", true},
 		{&c.RolloutTimeout, "ROLLOUT_TIMEOUT", "5m", false},
+		{&c.PrepTimeout, "PREP_TIMEOUT", "2m", false},
 	}
 	for _, d := range durations {
 		if *d.dst, err = time.ParseDuration(env(d.key, d.def)); err != nil {

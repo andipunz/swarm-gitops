@@ -46,6 +46,8 @@ type Input struct {
 	Optional                                      map[string]bool
 	VarsFile                                      string
 	Policy                                        *policy.Policy
+	// HostClaims: hostname -> stack already routing it (nil skips the check).
+	HostClaims map[string]string
 }
 
 // Result of a render. Violations != nil means the stack must not be deployed.
@@ -55,6 +57,8 @@ type Result struct {
 	Services   []string
 	Images     map[string]string
 	Violations []string
+	Binds      []policy.Bind // bind mounts to prepare on the nodes
+	Hosts      []string      // hostnames routed by this stack
 }
 
 // ErrInvalid wraps problems caused by the repo content (shown to devs).
@@ -111,7 +115,11 @@ func Render(ctx context.Context, in Input) (*Result, error) {
 			env[k] = v
 		}
 	}
-	for k, v := range map[string]string{"ENV": in.Env, "GIT_SHA": in.Commit, "GIT_REF": in.Ref, "STACK": in.Stack, "REPO": in.Repo} {
+	builtins := map[string]string{"ENV": in.Env, "GIT_SHA": in.Commit, "GIT_REF": in.Ref, "STACK": in.Stack, "REPO": in.Repo}
+	if d := in.Policy.DataDir(in.Repo, in.Env, in.Stack); d != "" {
+		builtins["STACK_DATA"] = d
+	}
+	for k, v := range builtins {
 		env[k] = v
 	}
 
@@ -123,11 +131,30 @@ func Render(ctx context.Context, in Input) (*Result, error) {
 	if err := yaml.Unmarshal(rendered, &doc); err != nil {
 		return nil, fmt.Errorf("parse rendered stack: %w", err)
 	}
-	if v := in.Policy.Check(doc, policy.Context{Stack: in.Stack, Env: in.Env, WorkDir: in.WorkDir}); len(v) > 0 {
-		return &Result{Violations: v}, nil
+	// Compose never interpolates label keys; Traefik router names must be
+	// unique per stack, so ${STACK} / ${ENV} are replaced in keys (before the
+	// policy check, which verifies router names).
+	keyVars := strings.NewReplacer("${STACK}", in.Stack, "${ENV}", in.Env)
+	services, _ := doc["services"].(map[string]any)
+	for _, name := range sortedKeys(services) {
+		svc, _ := services[name].(map[string]any)
+		for _, holder := range []map[string]any{svc, asMap(svc["deploy"])} {
+			if holder == nil || holder["labels"] == nil {
+				continue
+			}
+			m := map[string]any{}
+			for k, v := range labelMap(holder["labels"]) {
+				m[keyVars.Replace(k)] = v
+			}
+			holder["labels"] = m
+		}
+	}
+	report := in.Policy.Check(doc, policy.Context{Stack: in.Stack, Repo: in.Repo, Env: in.Env, WorkDir: in.WorkDir, HostClaims: in.HostClaims})
+	if len(report.Violations) > 0 {
+		return &Result{Violations: report.Violations}, nil
 	}
 
-	res := &Result{Images: map[string]string{}}
+	res := &Result{Images: map[string]string{}, Binds: report.Binds, Hosts: report.Hosts}
 	// Swarm configs are immutable: name them by content so a change rolls the service.
 	hashDoc := map[string]any{}
 	configs, _ := doc["configs"].(map[string]any)
@@ -148,7 +175,6 @@ func Render(ctx context.Context, in Input) (*Result, error) {
 		hashDoc["config:"+name] = h
 	}
 
-	keyVars := strings.NewReplacer("${STACK}", in.Stack, "${ENV}", in.Env)
 	labels := map[string]string{
 		LabelManaged: "true", LabelRepo: in.Repo, LabelEnv: in.Env, LabelGHEnv: in.GitHubEnv,
 		LabelRef: in.Ref, LabelStack: in.Stack,
@@ -156,7 +182,6 @@ func Render(ctx context.Context, in Input) (*Result, error) {
 	if in.URL != "" {
 		labels[LabelURL] = in.URL
 	}
-	services, _ := doc["services"].(map[string]any)
 	for _, name := range sortedKeys(services) {
 		svc, _ := services[name].(map[string]any)
 		delete(svc, "env_file") // already inlined into environment by docker stack config
@@ -165,19 +190,7 @@ func Render(ctx context.Context, in Input) (*Result, error) {
 			deploy = map[string]any{}
 			svc["deploy"] = deploy
 		}
-		// Compose never interpolates label keys; Traefik router names must be
-		// unique per stack, so ${STACK} / ${ENV} are replaced in keys here.
-		l := map[string]string{}
-		for k, v := range labelMap(deploy["labels"]) {
-			l[keyVars.Replace(k)] = v
-		}
-		if cl := labelMap(svc["labels"]); len(cl) > 0 {
-			m := map[string]any{}
-			for k, v := range cl {
-				m[keyVars.Replace(k)] = v
-			}
-			svc["labels"] = m
-		}
+		l := labelMap(deploy["labels"])
 		for k, v := range labels {
 			l[k] = v
 		}
@@ -282,6 +295,8 @@ func labelMap(v any) map[string]string {
 	}
 	return res
 }
+
+func asMap(v any) map[string]any { m, _ := v.(map[string]any); return m }
 
 func cut(s string, n int) string {
 	if len(s) > n {
