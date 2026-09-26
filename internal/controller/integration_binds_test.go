@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +19,15 @@ import (
 	"github.com/andipunz/swarm-gitops/internal/state"
 	"github.com/andipunz/swarm-gitops/internal/swarm"
 )
+
+// plantSymlink simulates what a container with the parent folder mounted
+// could do: a Swarm service normally runs as root inside its own container
+// regardless of the uid running this test process, and root can create a
+// symlink in a folder no matter who its bind-mount-created owner is.
+func plantSymlink(t *testing.T, target, linkPath string) {
+	t.Helper()
+	sh(t, "run", "--rm", "-v", path.Dir(linkPath)+":/mnt", "busybox", "ln", "-s", target, "/mnt/"+path.Base(linkPath))
+}
 
 const bindRoot = "/tmp/sg-it"
 
@@ -120,19 +130,14 @@ func TestBindsAndHosts(t *testing.T) {
 	})
 
 	t.Run("symlink planted by a container is refused", func(t *testing.T) {
-		// what a container with the folder mounted could do
-		if err := os.Symlink("/etc", bindRoot+"/files/prod/uploads/evil"); err != nil {
-			t.Fatal(err)
-		}
+		plantSymlink(t, "/etc", bindRoot+"/files/prod/uploads/evil")
 		git.push("files", "main", simpleRepo(webStack("    volumes: ['${STACK_DATA}/uploads/evil:/x']\n")))
 		c.Scan(ctx)
 		// uploads was mounted writable before -> refused by the history rule already
 		expect(t, "files", "failure", "was mounted writable before")
 
 		// a symlink next to (not below) earlier mounts is caught on the node
-		if err := os.Symlink("/etc", bindRoot+"/files/prod/sneaky"); err != nil {
-			t.Fatal(err)
-		}
+		plantSymlink(t, "/etc", bindRoot+"/files/prod/sneaky")
 		git.push("files", "main", simpleRepo(webStack("    volumes: ['${STACK_DATA}/sneaky:/x']\n")))
 		c.Scan(ctx)
 		expect(t, "files", "failure", "symlink")
