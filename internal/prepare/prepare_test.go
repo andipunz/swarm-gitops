@@ -14,8 +14,17 @@ func TestRun(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Chowning to an arbitrary uid needs CAP_CHOWN (root); a real prep job
+	// always runs as root in its container, but a CI runner's own user
+	// typically doesn't have it - skip that one case there instead of
+	// asserting a privilege the test environment doesn't have.
+	owner := ""
+	if os.Geteuid() == 0 {
+		owner = "1000:1000"
+	}
+
 	// creates missing folders
-	if err := Run(root, []Spec{{Prefix: "/srv/swarm", Path: "/srv/swarm/app/prod/uploads", Create: true}}, "1000:1000"); err != nil {
+	if err := Run(root, []Spec{{Prefix: "/srv/swarm", Path: "/srv/swarm/app/prod/uploads", Create: true}}, owner); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Stat(host("/srv/swarm/app/prod/uploads"))
