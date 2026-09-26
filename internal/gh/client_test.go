@@ -104,3 +104,97 @@ func TestAppAuthGraphQLAndETag(t *testing.T) {
 		t.Fatalf("expected 404, got %v", err)
 	}
 }
+
+func TestTokenAuth(t *testing.T) {
+	var sawAppEndpoint bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/installation") || strings.Contains(r.URL.Path, "access_tokens") {
+			sawAppEndpoint = true
+		}
+		if r.Header.Get("Authorization") != "Bearer mytoken" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Path == "/repos/bw/app/git/blobs/b1" {
+			io.WriteString(w, `{"content":"aGVsbG8=","encoding":"base64"}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	c := NewWithToken("bw", srv.URL, "mytoken")
+	data, err := c.Blob("app", "b1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("data = %q", data)
+	}
+	if sawAppEndpoint {
+		t.Fatal("token auth must never call the GitHub App installation endpoints")
+	}
+}
+
+func TestBranchProtected(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+
+	var protection, rules string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/orgs/bw/installation":
+			io.WriteString(w, `{"id":42}`)
+		case r.URL.Path == "/app/installations/42/access_tokens":
+			json.NewEncoder(w).Encode(map[string]any{"token": "inst-tok", "expires_at": time.Now().Add(time.Hour)})
+		case r.URL.Path == "/repos/bw/app/branches/main/protection":
+			if protection == "404" {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			io.WriteString(w, protection)
+		case r.URL.Path == "/repos/bw/app/rules/branches/main":
+			io.WriteString(w, rules)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	c, err := New("bw", srv.URL, 7, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Classic protection or a ruleset must actually require a pull request
+	// WITH at least one approval: weaker rules (blocking force-pushes,
+	// requiring only a status check, or a PR with zero required approvals)
+	// must not count, because a collaborator could still push directly, or
+	// open and self-merge an unreviewed pull request.
+	cases := []struct {
+		name, protection, rules string
+		want                    bool
+	}{
+		{"classic with required reviews", `{"required_pull_request_reviews":{"required_approving_review_count":1}}`, `[]`, true},
+		{"classic protected but no review requirement", `{}`, `[]`, false},
+		{"classic pull request required but zero approvals", `{"required_pull_request_reviews":{"required_approving_review_count":0}}`, `[]`, false},
+		{"unprotected, ruleset requires pull request with approval", "404", `[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]`, true},
+		{"unprotected, ruleset requires pull request but zero approvals", "404", `[{"type":"pull_request","parameters":{"required_approving_review_count":0}}]`, false},
+		{"unprotected, ruleset requires pull request, no parameters", "404", `[{"type":"pull_request"}]`, false},
+		{"unprotected, ruleset only blocks force-push", "404", `[{"type":"non_fast_forward"}]`, false},
+		{"unprotected, ruleset only requires status checks", "404", `[{"type":"required_status_checks"}]`, false},
+		{"unprotected, no rules", "404", `[]`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			protection, rules = tc.protection, tc.rules
+			got, err := c.BranchProtected("app", "main")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("BranchProtected = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

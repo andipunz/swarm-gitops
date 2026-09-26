@@ -8,13 +8,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/policy"
+	"github.com/andipunz/swarm-gitops/internal/policy"
 	"gopkg.in/yaml.v3"
 )
 
 const baseStack = `services:
   web:
-    image: ghcr.io/bergwacht-bayern/web:${TAG:-main}
+    image: ghcr.io/example/web:${TAG:-main}
     env_file: [app.env]
     configs:
       - source: nginx
@@ -30,7 +30,7 @@ configs:
     file: ./config/nginx.conf
 secrets:
   db:
-    driver: bergwacht/secrets
+    driver: acme/secrets
 networks:
   traefik-public:
     external: true
@@ -54,8 +54,8 @@ func setup(t *testing.T, files map[string]string) string {
 
 func pol() *policy.Policy {
 	p := policy.Default()
-	p.SecretDriver = "bergwacht/secrets"
-	p.ImagePrefixes = []string{"ghcr.io/bergwacht-bayern/"}
+	p.SecretDriver = "acme/secrets"
+	p.ImagePrefixes = []string{"ghcr.io/example/"}
 	return p
 }
 
@@ -87,7 +87,7 @@ func TestRenderOK(t *testing.T) {
 		t.Fatal(err)
 	}
 	web := doc["services"].(map[string]any)["web"].(map[string]any)
-	if web["image"] != "ghcr.io/bergwacht-bayern/web:v1.2.3" {
+	if web["image"] != "ghcr.io/example/web:v1.2.3" {
 		t.Errorf("image = %v (vars file not applied)", web["image"])
 	}
 	if _, ok := web["env_file"]; ok {
@@ -140,27 +140,27 @@ func TestRenderViolations(t *testing.T) {
 	}{
 		"docker socket": {`services:
   web:
-    image: ghcr.io/bergwacht-bayern/web:1
+    image: ghcr.io/example/web:1
     volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
 `, "bind mount"},
 		"long bind": {`services:
   web:
-    image: ghcr.io/bergwacht-bayern/web:1
+    image: ghcr.io/example/web:1
     volumes: [{type: bind, source: /, target: /host}]
 `, "bind mount"},
 		"foreign image": {"services:\n  web:\n    image: evil/miner:latest\n", "not from an allowed registry"},
-		"host network":  {"services:\n  web:\n    image: ghcr.io/bergwacht-bayern/web:1\n    networks: [hostnet]\nnetworks:\n  hostnet:\n    external: true\n    name: host\n", "external network"},
-		"ports":         {"services:\n  web:\n    image: ghcr.io/bergwacht-bayern/web:1\n    ports: [\"443:443\"]\n", "published ports"},
-		"file secret":   {"services:\n  web:\n    image: ghcr.io/bergwacht-bayern/web:1\n    secrets: [s]\nsecrets:\n  s:\n    file: ./s.txt\n", "not allowed for secrets"},
+		"host network":  {"services:\n  web:\n    image: ghcr.io/example/web:1\n    networks: [hostnet]\nnetworks:\n  hostnet:\n    external: true\n    name: host\n", "external network"},
+		"ports":         {"services:\n  web:\n    image: ghcr.io/example/web:1\n    ports: [\"443:443\"]\n", "published ports"},
+		"file secret":   {"services:\n  web:\n    image: ghcr.io/example/web:1\n    secrets: [s]\nsecrets:\n  s:\n    file: ./s.txt\n", "not allowed for secrets"},
 		"reserved label": {`services:
   web:
-    image: ghcr.io/bergwacht-bayern/web:1
+    image: ghcr.io/example/web:1
     deploy:
       labels:
         swarm-gitops.repo: other
 `, "reserved"},
-		"cap_add":       {"services:\n  web:\n    image: ghcr.io/bergwacht-bayern/web:1\n    cap_add: [SYS_ADMIN]\n", "capability"},
-		"bind via opts": {"services:\n  web:\n    image: ghcr.io/bergwacht-bayern/web:1\n    volumes: [\"d:/d\"]\nvolumes:\n  d:\n    driver_opts: {type: none, o: bind, device: /etc}\n", "network filesystem"},
+		"cap_add":       {"services:\n  web:\n    image: ghcr.io/example/web:1\n    cap_add: [SYS_ADMIN]\n", "capability"},
+		"bind via opts": {"services:\n  web:\n    image: ghcr.io/example/web:1\n    volumes: [\"d:/d\"]\nvolumes:\n  d:\n    driver_opts: {type: none, o: bind, device: /etc}\n", "network filesystem"},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -179,10 +179,10 @@ func TestRenderViolations(t *testing.T) {
 // Files outside .swarm must never be read by docker stack config.
 func TestPrecheckBlocksFileExfiltration(t *testing.T) {
 	for name, stack := range map[string]string{
-		"env_file absolute": "services:\n  web:\n    image: ghcr.io/bergwacht-bayern/web:1\n    env_file: [/run/secrets/github-app-key]\n",
-		"env_file escape":   "services:\n  web:\n    image: ghcr.io/bergwacht-bayern/web:1\n    env_file: ../../state.json\n",
-		"config escape":     "services:\n  web:\n    image: ghcr.io/bergwacht-bayern/web:1\nconfigs:\n  c:\n    file: /etc/shadow\n",
-		"variable path":     "services:\n  web:\n    image: ghcr.io/bergwacht-bayern/web:1\n    env_file: ${HOME}/x\n",
+		"env_file absolute": "services:\n  web:\n    image: ghcr.io/example/web:1\n    env_file: [/run/secrets/github-app-key]\n",
+		"env_file escape":   "services:\n  web:\n    image: ghcr.io/example/web:1\n    env_file: ../../state.json\n",
+		"config escape":     "services:\n  web:\n    image: ghcr.io/example/web:1\nconfigs:\n  c:\n    file: /etc/shadow\n",
+		"variable path":     "services:\n  web:\n    image: ghcr.io/example/web:1\n    env_file: ${HOME}/x\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := setup(t, map[string]string{"stack.yml": stack, "prod.env": ""})
@@ -198,7 +198,7 @@ func TestPrecheckBlocksFileExfiltration(t *testing.T) {
 }
 
 func TestRenderRejectsDockerVars(t *testing.T) {
-	dir := setup(t, map[string]string{"stack.yml": "services:\n  web:\n    image: ghcr.io/bergwacht-bayern/web:1\n", "prod.env": "DOCKER_HOST=tcp://evil:2375\n"})
+	dir := setup(t, map[string]string{"stack.yml": "services:\n  web:\n    image: ghcr.io/example/web:1\n", "prod.env": "DOCKER_HOST=tcp://evil:2375\n"})
 	if _, err := Render(context.Background(), input(dir, "c1", "stack.yml")); err == nil || !strings.Contains(err.Error(), "not allowed") {
 		t.Fatalf("expected error, got %v", err)
 	}

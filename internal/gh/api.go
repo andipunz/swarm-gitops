@@ -255,26 +255,40 @@ func (c *Client) Blob(repo, sha string) ([]byte, error) {
 	return base64.StdEncoding.DecodeString(strings.ReplaceAll(out.Content, "\n", ""))
 }
 
-// BranchProtected reports whether a branch has classic protection or rulesets.
+// BranchProtected reports whether changes to the branch must go through a
+// pull request with at least one required approval: classic protection with
+// required reviews, or a ruleset with a "pull_request" rule requiring
+// approvals. Weaker protections alone (blocking force-pushes, requiring only
+// a status check, requiring a pull request but no approval, ...) are not
+// enough: a collaborator with push access could still land a commit on the
+// branch directly, or self-merge an unreviewed pull request, which is
+// exactly what REQUIRE_PROTECTED is meant to prevent.
 func (c *Client) BranchProtected(repo, branch string) (bool, error) {
-	var b struct {
-		Protected bool `json:"protected"`
+	var prot struct {
+		RequiredPullRequestReviews *struct {
+			RequiredApprovingReviewCount int `json:"required_approving_review_count"`
+		} `json:"required_pull_request_reviews"`
 	}
-	if err := c.do("GET", fmt.Sprintf("/repos/%s/%s/branches/%s", c.Org, repo, url.PathEscape(branch)), nil, &b); err != nil {
+	err := c.do("GET", fmt.Sprintf("/repos/%s/%s/branches/%s/protection", c.Org, repo, url.PathEscape(branch)), nil, &prot)
+	switch {
+	case err == nil:
+		if r := prot.RequiredPullRequestReviews; r != nil && r.RequiredApprovingReviewCount >= 1 {
+			return true, nil
+		}
+	case !IsNotFound(err):
 		return false, err
 	}
-	if b.Protected {
-		return true, nil
-	}
 	var rules []struct {
-		Type string `json:"type"`
+		Type       string `json:"type"`
+		Parameters struct {
+			RequiredApprovingReviewCount int `json:"required_approving_review_count"`
+		} `json:"parameters"`
 	}
 	if err := c.do("GET", fmt.Sprintf("/repos/%s/%s/rules/branches/%s", c.Org, repo, url.PathEscape(branch)), nil, &rules); err != nil {
 		return false, err
 	}
 	for _, r := range rules {
-		switch r.Type {
-		case "pull_request", "non_fast_forward", "update", "required_status_checks":
+		if r.Type == "pull_request" && r.Parameters.RequiredApprovingReviewCount >= 1 {
 			return true, nil
 		}
 	}

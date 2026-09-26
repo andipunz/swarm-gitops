@@ -6,8 +6,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/render"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/state"
+	"github.com/andipunz/swarm-gitops/internal/render"
+	"github.com/andipunz/swarm-gitops/internal/state"
 )
 
 // StackStatus is one line of `swarm-gitops status`.

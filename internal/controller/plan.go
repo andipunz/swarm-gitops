@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/gh"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/spec"
+	"github.com/andipunz/swarm-gitops/internal/gh"
+	"github.com/andipunz/swarm-gitops/internal/spec"
 )
 
 // Target is one stack that should run: repo + environment + branch head.

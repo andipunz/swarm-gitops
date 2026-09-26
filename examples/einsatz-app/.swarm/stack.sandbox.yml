@@ -3,7 +3,7 @@ services:
   app:
     deploy:
       labels:
-        traefik.http.routers.${STACK}.rule: Host(`${STACK}.sandbox.bergwacht-bayern.de`)
+        traefik.http.routers.${STACK}.rule: Host(`${STACK}.sandbox.example.com`)
   db:
     deploy:
       resources:

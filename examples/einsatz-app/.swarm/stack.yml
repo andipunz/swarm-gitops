@@ -3,7 +3,7 @@
 # ${ENV}, ${GIT_SHA}, ${GIT_REF}, ${STACK}, ${REPO}.
 services:
   app:
-    image: ghcr.io/bergwacht-bayern/einsatz-app:${IMAGE_TAG:-main}
+    image: ghcr.io/example/einsatz-app:${IMAGE_TAG:-main}
     environment:
       APP_ENV: ${ENV}
       DATABASE_HOST: db
@@ -48,7 +48,10 @@ configs:
 
 secrets:
   db_password:
-    driver: bergwacht/secrets      # values come from the secrets plugin, never from git
+    external: true
+    name: ${STACK}_db_password   # created ahead of time: docker secret create ${STACK}_db_password -
+    # Or, with your own secrets driver plugin (see deploy/policy.yml):
+    # driver: your-org/secrets
 
 networks:
   traefik-public:

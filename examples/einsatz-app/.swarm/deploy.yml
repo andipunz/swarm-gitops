@@ -6,13 +6,13 @@ environments:
     ref: main                      # protected branch required
     files: [stack.yml, stack.prod.yml]
     vars: prod.env
-    url: https://einsatz.bergwacht-bayern.de
+    url: https://einsatz.example.com
     bind_owner: "1000:1000"        # owner of bind folders the controller creates
   staging:
     ref: develop
     files: [stack.yml, stack.staging.yml]
     vars: staging.env
-    url: https://einsatz.staging.bergwacht-bayern.de
+    url: https://einsatz.staging.example.com
   sandbox:
     ref: "sandbox/*"               # one stack per branch, removed when the branch is deleted
     # files default to [stack.yml, stack.sandbox.yml (if present)]

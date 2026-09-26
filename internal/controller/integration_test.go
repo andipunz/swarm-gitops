@@ -21,12 +21,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/config"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/gh"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/policy"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/registry"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/state"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/swarm"
+	"github.com/andipunz/swarm-gitops/internal/config"
+	"github.com/andipunz/swarm-gitops/internal/gh"
+	"github.com/andipunz/swarm-gitops/internal/policy"
+	"github.com/andipunz/swarm-gitops/internal/registry"
+	"github.com/andipunz/swarm-gitops/internal/state"
+	"github.com/andipunz/swarm-gitops/internal/swarm"
 )
 
 // ---- fake GitHub -----------------------------------------------------------
@@ -304,6 +304,28 @@ func TestEndToEnd(t *testing.T) {
 		}
 		if stackLabel("web-prod", "swarm-gitops.repo") != "web" {
 			t.Fatal("controller labels missing")
+		}
+	})
+
+	t.Run("metrics endpoint reports replica counts", func(t *testing.T) {
+		m, err := c.Metrics(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var found bool
+		for _, s := range m.Stacks {
+			if s.Stack == "web-prod" && s.Service == "web-prod_web" {
+				found = true
+				if s.Desired != 2 || s.Running != 2 {
+					t.Fatalf("web-prod_web replicas = %+v, want desired=2 running=2", s)
+				}
+			}
+		}
+		if !found {
+			t.Fatalf("web-prod_web missing from metrics: %+v", m.Stacks)
+		}
+		if m.LastScan.IsZero() {
+			t.Fatal("LastScan not set")
 		}
 	})
 

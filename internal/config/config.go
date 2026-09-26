@@ -11,9 +11,13 @@ import (
 
 // Config holds all settings.
 type Config struct {
-	Org              string        // GITHUB_ORG
-	AppID            int64         // GITHUB_APP_ID
-	AppKeyFile       string        // GITHUB_APP_KEY_FILE
+	Org        string // GITHUB_ORG
+	AppID      int64  // GITHUB_APP_ID (GitHub App auth)
+	AppKeyFile string // GITHUB_APP_KEY_FILE (GitHub App auth)
+	// Token authenticates as a personal access token instead of a GitHub
+	// App: set GITHUB_TOKEN directly, or GITHUB_TOKEN_FILE to read it from a
+	// mounted secret. Mutually exclusive with the App settings above.
+	Token            string
 	APIURL           string        // GITHUB_API_URL
 	EnvProperty      string        // ENV_PROPERTY: org custom property listing allowed envs ("" = all allowed)
 	RequireProtected []string      // REQUIRE_PROTECTED: envs that may only deploy from protected branches
@@ -31,13 +35,17 @@ type Config struct {
 	DryRun           bool          // DRY_RUN: render, check and report, but never touch the Swarm
 	PrepImage        string        // PREP_IMAGE: image running `swarm-gitops prepare` on the nodes
 	PrepTimeout      time.Duration // PREP_TIMEOUT
+	// MetricsAddr, e.g. ":9090", starts a read-only Prometheus endpoint on
+	// its own listener. Empty (default) disables it. Unlike SOCKET, this is
+	// meant to be network-reachable - keep it off the public internet (no
+	// Traefik router, an internal-only overlay network is enough).
+	MetricsAddr string // METRICS_ADDR
 }
 
 // FromEnv loads the configuration.
 func FromEnv() (*Config, error) {
 	c := &Config{
 		Org:              os.Getenv("GITHUB_ORG"),
-		AppKeyFile:       os.Getenv("GITHUB_APP_KEY_FILE"),
 		APIURL:           env("GITHUB_API_URL", "https://api.github.com"),
 		EnvProperty:      env("ENV_PROPERTY", "swarm-environments"),
 		RequireProtected: list(env("REQUIRE_PROTECTED", "prod")),
@@ -45,15 +53,19 @@ func FromEnv() (*Config, error) {
 		PolicyFile:       os.Getenv("POLICY_FILE"),
 		Socket:           env("SOCKET", "/run/swarm-gitops/api.sock"),
 		DockerConfig:     os.Getenv("DOCKER_CONFIG"),
-		PrepImage:        env("PREP_IMAGE", "ghcr.io/bergwacht-bayern/swarm-gitops:latest"),
+		// No built-in default: it must name your own image, not any specific
+		// project's. Usually the same image running this controller (see
+		// deploy/stack.yml).
+		PrepImage:   os.Getenv("PREP_IMAGE"),
+		MetricsAddr: os.Getenv("METRICS_ADDR"),
+	}
+	if err := c.loadAuth(); err != nil {
+		return nil, err
+	}
+	if c.Org == "" || c.PrepImage == "" {
+		return nil, fmt.Errorf("GITHUB_ORG and PREP_IMAGE are required")
 	}
 	var err error
-	if c.AppID, err = strconv.ParseInt(os.Getenv("GITHUB_APP_ID"), 10, 64); err != nil {
-		return nil, fmt.Errorf("GITHUB_APP_ID: %v", err)
-	}
-	if c.Org == "" || c.AppKeyFile == "" {
-		return nil, fmt.Errorf("GITHUB_ORG and GITHUB_APP_KEY_FILE are required")
-	}
 	durations := []struct {
 		dst  *time.Duration
 		key  string
@@ -90,6 +102,44 @@ func FromEnv() (*Config, error) {
 	c.PruneEnabled = env("PRUNE_ENABLED", "true") == "true"
 	c.DryRun = env("DRY_RUN", "false") == "true"
 	return c, nil
+}
+
+// loadAuth resolves exactly one of the two supported ways to authenticate to
+// GitHub: a GitHub App (GITHUB_APP_ID + GITHUB_APP_KEY_FILE) or a personal
+// access token (GITHUB_TOKEN or GITHUB_TOKEN_FILE).
+func (c *Config) loadAuth() error {
+	appID, appKeyFile := os.Getenv("GITHUB_APP_ID"), os.Getenv("GITHUB_APP_KEY_FILE")
+	token, tokenFile := os.Getenv("GITHUB_TOKEN"), os.Getenv("GITHUB_TOKEN_FILE")
+	switch {
+	case appID != "" || appKeyFile != "":
+		if token != "" || tokenFile != "" {
+			return fmt.Errorf("set either GITHUB_APP_ID/GITHUB_APP_KEY_FILE or GITHUB_TOKEN/GITHUB_TOKEN_FILE, not both")
+		}
+		if appID == "" || appKeyFile == "" {
+			return fmt.Errorf("GITHUB_APP_ID and GITHUB_APP_KEY_FILE must be set together")
+		}
+		id, err := strconv.ParseInt(appID, 10, 64)
+		if err != nil {
+			return fmt.Errorf("GITHUB_APP_ID: %v", err)
+		}
+		c.AppID, c.AppKeyFile = id, appKeyFile
+		return nil
+	case token != "" || tokenFile != "":
+		if tokenFile != "" {
+			data, err := os.ReadFile(tokenFile)
+			if err != nil {
+				return fmt.Errorf("GITHUB_TOKEN_FILE: %v", err)
+			}
+			token = strings.TrimSpace(string(data))
+		}
+		if token == "" {
+			return fmt.Errorf("GITHUB_TOKEN_FILE is empty")
+		}
+		c.Token = token
+		return nil
+	default:
+		return fmt.Errorf("set GITHUB_APP_ID/GITHUB_APP_KEY_FILE (a GitHub App) or GITHUB_TOKEN/GITHUB_TOKEN_FILE (a personal access token)")
+	}
 }
 
 func env(k, def string) string {

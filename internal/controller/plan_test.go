@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/gh"
+	"github.com/andipunz/swarm-gitops/internal/gh"
 )
 
 const deployYML = `

@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/controller"
+	"github.com/andipunz/swarm-gitops/internal/controller"
 )
 
 // Serve listens on the socket until ctx is done.

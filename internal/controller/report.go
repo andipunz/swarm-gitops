@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/gh"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/render"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/state"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/swarm"
+	"github.com/andipunz/swarm-gitops/internal/gh"
+	"github.com/andipunz/swarm-gitops/internal/render"
+	"github.com/andipunz/swarm-gitops/internal/state"
+	"github.com/andipunz/swarm-gitops/internal/swarm"
 )
 
 // maxAttempts for temporary errors (GitHub/Docker unreachable) per commit.

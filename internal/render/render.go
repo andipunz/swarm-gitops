@@ -19,8 +19,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/policy"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/spec"
+	"github.com/andipunz/swarm-gitops/internal/policy"
+	"github.com/andipunz/swarm-gitops/internal/spec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -48,6 +48,9 @@ type Input struct {
 	Policy                                        *policy.Policy
 	// HostClaims: hostname -> stack already routing it (nil skips the check).
 	HostClaims map[string]string
+	// ObjectClaims: Traefik object key ("proto.kind.name") -> stack already
+	// declaring it (nil skips the check).
+	ObjectClaims map[string]string
 }
 
 // Result of a render. Violations != nil means the stack must not be deployed.
@@ -59,6 +62,7 @@ type Result struct {
 	Violations []string
 	Binds      []policy.Bind // bind mounts to prepare on the nodes
 	Hosts      []string      // hostnames routed by this stack
+	Objects    []string      // Traefik object keys ("proto.kind.name") declared by this stack
 }
 
 // ErrInvalid wraps problems caused by the repo content (shown to devs).
@@ -149,12 +153,15 @@ func Render(ctx context.Context, in Input) (*Result, error) {
 			holder["labels"] = m
 		}
 	}
-	report := in.Policy.Check(doc, policy.Context{Stack: in.Stack, Repo: in.Repo, Env: in.Env, WorkDir: in.WorkDir, HostClaims: in.HostClaims})
+	report := in.Policy.Check(doc, policy.Context{
+		Stack: in.Stack, Repo: in.Repo, Env: in.Env, WorkDir: in.WorkDir,
+		HostClaims: in.HostClaims, ObjectClaims: in.ObjectClaims,
+	})
 	if len(report.Violations) > 0 {
 		return &Result{Violations: report.Violations}, nil
 	}
 
-	res := &Result{Images: map[string]string{}, Binds: report.Binds, Hosts: report.Hosts}
+	res := &Result{Images: map[string]string{}, Binds: report.Binds, Hosts: report.Hosts, Objects: report.Objects}
 	// Swarm configs are immutable: name them by content so a change rolls the service.
 	hashDoc := map[string]any{}
 	configs, _ := doc["configs"].(map[string]any)

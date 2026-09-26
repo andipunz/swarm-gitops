@@ -85,6 +85,19 @@ func New(org, apiURL string, appID int64, keyPEM []byte) (*Client, error) {
 	}, nil
 }
 
+// NewWithToken creates a client authenticated with a personal access token
+// (classic or fine-grained) instead of a GitHub App installation. See the
+// README for the permissions such a token needs.
+func NewWithToken(org, apiURL, token string) *Client {
+	return &Client{
+		Org:    org,
+		APIURL: strings.TrimRight(apiURL, "/"),
+		token:  token,
+		http:   &http.Client{Timeout: 30 * time.Second},
+		etags:  map[string]cached{},
+	}
+}
+
 func (c *Client) appJWT() (string, error) {
 	now := time.Now()
 	hdr := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
@@ -102,10 +115,15 @@ func (c *Client) appJWT() (string, error) {
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(sig), nil
 }
 
-// installationToken returns a cached installation token, refreshing it early.
+// installationToken returns a bearer token for API calls: the static
+// personal access token for a Client made with NewWithToken, or a cached
+// GitHub App installation token, refreshed early.
 func (c *Client) installationToken() (string, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.key == nil {
+		return c.token, nil
+	}
 	if c.token != "" && time.Until(c.expires) > 5*time.Minute {
 		return c.token, nil
 	}

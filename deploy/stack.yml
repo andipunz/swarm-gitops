@@ -2,7 +2,7 @@
 #
 #   docker node update --label-add swarm-gitops=true <manager-node>
 #   mkdir -p /srv/swarm                    # on EVERY node: base folder for bind mounts (see policy.yml)
-#   docker secret create swarm_gitops_app_key   ./github-app.private-key.pem
+#   docker secret create swarm_gitops_app_key   ./github-app.private-key.pem   # or swarm_gitops_token, see below
 #   docker secret create swarm_gitops_registry  ./registry-config.json   # {"auths":{"ghcr.io":{"auth":"base64(user:token)"}}}
 #   docker stack deploy -c deploy/stack.yml swarm-gitops
 #
@@ -10,11 +10,14 @@
 # reported to GitHub, but nothing is deployed or removed.
 services:
   controller:
-    image: ghcr.io/bergwacht-bayern/swarm-gitops:latest
+    image: ghcr.io/andipunz/swarm-gitops:latest
     environment:
-      GITHUB_ORG: bergwacht-bayern
+      GITHUB_ORG: your-org
       GITHUB_APP_ID: "000000"                     # <- your App ID
       GITHUB_APP_KEY_FILE: /run/secrets/swarm_gitops_app_key
+      # Or, instead of the two lines above, a personal access token (see the
+      # README's "Authenticate to GitHub" section):
+      # GITHUB_TOKEN_FILE: /run/secrets/swarm_gitops_token
       ENV_PROPERTY: swarm-environments            # org custom property (multi select)
       REQUIRE_PROTECTED: prod                     # envs that need a protected branch
       SCAN_INTERVAL: 1m
@@ -24,9 +27,10 @@ services:
       PRUNE_CONFIRMATIONS: "2"
       MAX_PRUNE: "3"
       DOCKER_CONFIG: /docker-config               # registry auth for pulls and digest checks
-      PREP_IMAGE: ghcr.io/bergwacht-bayern/swarm-gitops:latest  # runs on the nodes to create bind folders (keep = image above)
+      PREP_IMAGE: ghcr.io/andipunz/swarm-gitops:latest  # runs on the nodes to create bind folders (keep = image above)
       DRY_RUN: "true"                             # <- set to "false" once the reports look right
       # POLICY_FILE: /etc/swarm-gitops/policy.yml (default, baked into the image)
+      # METRICS_ADDR: ":9090"   # read-only Prometheus endpoint, not published - see README's "Metrics"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - data:/data

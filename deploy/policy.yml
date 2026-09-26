@@ -5,7 +5,7 @@
 # Images must come from here (checked after normalising "nginx" to
 # "docker.io/library/nginx"). Remove the list to allow every registry.
 image_prefixes:
-  - ghcr.io/bergwacht-bayern/
+  - ghcr.io/example/
   - docker.io/library/        # official images (postgres, redis, nginx, ...)
 
 # External networks a stack may join. "*" = every environment.
@@ -25,28 +25,54 @@ bind_mounts:
   #   read_only: true
   # - path: /mnt/nas/einsatz         # only for one repository
   #   repos: [einsatz-app]
+  # - path: /                        # a whole host filesystem, e.g. node_exporter's
+  #   read_only: true                # disk-usage collector - always read-only, and
+  #   repos: [observability]         # always scoped to one named service, not the
+  #   services: [node-exporter]      # whole repo (required by swarm-gitops itself
+  #                                  # for path "/": bind_mounts is per-repo otherwise,
+  #                                  # which would hand host-root access to every
+  #                                  # other service the repo's compose files define,
+  #                                  # present and future)
 
 # Traefik: which hostnames a stack may route. On top of this, a hostname
 # belongs to the stack that routes it first (including stacks not managed
 # by swarm-gitops); nobody else can use it.
 traefik:
   hosts:
-    prod: [bergwacht-bayern.de, "*.bergwacht-bayern.de"]
-    staging: ["*.staging.bergwacht-bayern.de"]
-    sandbox: ["*.sandbox.bergwacht-bayern.de"]
+    prod: [example.com, "*.example.com"]
+    staging: ["*.staging.example.com"]
+    sandbox: ["*.sandbox.example.com"]
   reserved:                          # hostname or *.pattern -> the only repository allowed
-    bergwacht-bayern.de: website
-    www.bergwacht-bayern.de: website
+    example.com: website
+    www.example.com: website
   entrypoints: [websecure]
 
 # Publishing ports bypasses Traefik; keep false.
 allow_published_ports: false
+# Narrow, explicit exceptions to the above - e.g. a log-shipping backend a
+# node's own Docker daemon needs to reach directly, outside any overlay
+# network. Both mode and repos are required: no "any mode"/"any repo"
+# wildcard to reach for by accident.
+# published_ports:
+#   - published: 3100
+#     mode: host
+#     repos: [observability]
 
 # Linux capabilities that may be added (without CAP_ prefix).
 cap_add: []
 
-# Every secret must come from your secrets plugin.
-secret_driver: bergwacht/secrets
+# How secrets may be provided. `file:`/`environment:` are never allowed
+# (the value would end up in git or the rendered stack), regardless of these.
+#
+# Plain secrets created ahead of time with `docker secret create` - the
+# standard Swarm way, no plugin needed. Not scoped by swarm-gitops: an admin
+# who names secrets predictably could let one repo reference another's,
+# same as on any plain Swarm today.
+allow_external_secrets: true
+# Your own secrets driver plugin instead (or in addition), which can scope
+# secrets per repo/env using the labels swarm-gitops sets - see the README's
+# "Secrets plugin" section. Uncomment once you have one:
+# secret_driver: your-org/secrets
 
 max_replicas: 10
 

@@ -6,11 +6,12 @@ package policy
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/spec"
+	"github.com/andipunz/swarm-gitops/internal/spec"
 	"gopkg.in/yaml.v3"
 )
 
@@ -19,7 +20,7 @@ const ReservedLabelPrefix = "swarm-gitops."
 
 // Policy is loaded from the admin-controlled policy file.
 type Policy struct {
-	// Allowed image prefixes after normalisation, e.g. "ghcr.io/bergwacht-bayern/",
+	// Allowed image prefixes after normalisation, e.g. "ghcr.io/example/",
 	// "docker.io/library/". Empty list allows every image.
 	ImagePrefixes []string `yaml:"image_prefixes"`
 	// External networks a stack may join, per environment; "*" applies to all.
@@ -28,11 +29,26 @@ type Policy struct {
 	BindMounts []BindRule `yaml:"bind_mounts"`
 	// Traefik routing rules (hostnames per environment, reservations).
 	Traefik TraefikPolicy `yaml:"traefik"`
-	// Allow published ports (ingress or host mode).
+	// Allow published ports for every repo (bypasses Traefik, port
+	// conflicts) - keep false and use PublishedPorts for a narrow, explicit
+	// exception instead (e.g. a log-shipping backend a node's own Docker
+	// daemon needs to reach directly).
 	AllowPublishedPorts bool `yaml:"allow_published_ports"`
+	// Named exceptions to AllowPublishedPorts=false. Each entry names one
+	// exact (port, mode) pair and the only repos allowed to publish it -
+	// both Mode and Repos are required, so there's no "any mode"/"any repo"
+	// wildcard to reach for by accident.
+	PublishedPorts []PortRule `yaml:"published_ports"`
 	// Capabilities that may be added.
 	CapAdd []string `yaml:"cap_add"`
-	// Every secret must use this driver (your secrets plugin).
+	// Allow plain Swarm secrets (external: true, created ahead of time with
+	// `docker secret create`). No plugin needed, but not scoped by
+	// swarm-gitops: an admin who names secrets predictably could let one
+	// repo reference another's.
+	AllowExternalSecrets bool `yaml:"allow_external_secrets"`
+	// If set, secrets may also (or instead) use driver: <this value> - your
+	// own secrets driver plugin, which can scope secrets per repo/env using
+	// the labels swarm-gitops sets (see the README's "Secrets plugin" section).
 	SecretDriver string `yaml:"secret_driver"`
 	// Upper bound for deploy.replicas (0 = unlimited).
 	MaxReplicas int `yaml:"max_replicas"`
@@ -64,7 +80,33 @@ func Load(file string) (*Policy, error) {
 	if err := dec.Decode(p); err != nil {
 		return nil, fmt.Errorf("policy %s: %w", file, err)
 	}
+	for i, r := range p.PublishedPorts {
+		if r.Mode != "host" && r.Mode != "ingress" {
+			return nil, fmt.Errorf("policy %s: published_ports[%d]: mode must be \"host\" or \"ingress\"", file, i)
+		}
+		if len(r.Repos) == 0 {
+			return nil, fmt.Errorf("policy %s: published_ports[%d]: repos is required (no org-wide port exceptions by accident)", file, i)
+		}
+	}
+	for i, r := range p.BindMounts {
+		if path.Clean(r.Path) == "/" && len(r.Services) == 0 {
+			return nil, fmt.Errorf("policy %s: bind_mounts[%d]: path \"/\" also requires services (a host-root mount must be scoped to one named service, not every service the repo's compose files define)", file, i)
+		}
+	}
 	return p, nil
+}
+
+// PortRule is one named exception to AllowPublishedPorts=false: repo may
+// publish port Published in Mode, and nothing else may.
+//
+//	published_ports:
+//	  - published: 3100
+//	    mode: host
+//	    repos: [observability]   # required: no wildcard
+type PortRule struct {
+	Published int      `yaml:"published"`
+	Mode      string   `yaml:"mode"` // "host" or "ingress", required
+	Repos     []string `yaml:"repos"`
 }
 
 // Context describes the stack being checked.
@@ -76,6 +118,17 @@ type Context struct {
 	// HostClaims maps hostnames already routed by Traefik to the stack (or
 	// service) using them. nil skips the ownership check (e.g. in CI).
 	HostClaims map[string]string
+	// ObjectClaims maps a Traefik object key ("proto.kind.name", e.g.
+	// "http.routers.app-prod") already declared by some service to the stack
+	// (or service) using it. nil skips the ownership check (e.g. in CI).
+	//
+	// This exists on top of the "name must start with the stack name" rule
+	// below: that rule alone doesn't guarantee stacks can't collide, because
+	// one stack's name can be a hyphen-prefix of another's (e.g. "app-prod"
+	// and "app-prod-x"), which would let both legitimately claim a name like
+	// "app-prod-x-web". First-come-first-served ownership, checked the same
+	// way as hostnames, closes that gap regardless of naming coincidences.
+	ObjectClaims map[string]string
 }
 
 // Report is the result of a policy check.
@@ -83,14 +136,16 @@ type Report struct {
 	Violations []string
 	Binds      []Bind   // bind mounts, for folder preparation on the nodes
 	Hosts      []string // hostnames this stack routes
+	Objects    []string // Traefik object keys ("proto.kind.name") this stack declares
 }
 
 type checker struct {
-	p     *Policy
-	ctx   Context
-	v     []string
-	binds []Bind
-	hosts map[string]bool
+	p       *Policy
+	ctx     Context
+	v       []string
+	binds   []Bind
+	hosts   map[string]bool
+	objects map[string]bool
 }
 
 func (c *checker) add(where, format string, a ...any) {
@@ -153,7 +208,7 @@ func checkPaths(c *checker, where string, n any) {
 
 // Check validates the rendered stack.
 func (p *Policy) Check(stack map[string]any, ctx Context) Report {
-	c := &checker{p: p, ctx: ctx, hosts: map[string]bool{}}
+	c := &checker{p: p, ctx: ctx, hosts: map[string]bool{}, objects: map[string]bool{}}
 	for k := range stack {
 		switch k {
 		case "version", "services", "networks", "volumes", "configs", "secrets":
@@ -192,6 +247,10 @@ func (p *Policy) Check(stack map[string]any, ctx Context) Report {
 		r.Hosts = append(r.Hosts, h)
 	}
 	sort.Strings(r.Hosts)
+	for o := range c.objects {
+		r.Objects = append(r.Objects, o)
+	}
+	sort.Strings(r.Objects)
 	return r
 }
 
@@ -253,8 +312,12 @@ func (c *checker) service(name string, s map[string]any) {
 	for i, v := range asList(s["volumes"]) {
 		c.serviceVolume(name, constraints, fmt.Sprintf("%s.volumes[%d]", w, i), v)
 	}
-	if ports := asList(s["ports"]); len(ports) > 0 && !c.p.AllowPublishedPorts {
-		c.add(w+".ports", "published ports are not allowed, expose the service through Traefik labels")
+	if !c.p.AllowPublishedPorts {
+		for i, port := range asList(s["ports"]) {
+			if !c.p.portAllowed(c.ctx.Repo, port) {
+				c.add(fmt.Sprintf("%s.ports[%d]", w, i), "published ports are not allowed, expose the service through Traefik labels (unless explicitly listed in the policy's published_ports)")
+			}
+		}
 	}
 	checkLabels(c, w+".labels", s["labels"])
 	checkLabels(c, w+".deploy.labels", deploy["labels"])
@@ -367,18 +430,58 @@ func (c *checker) config(name string, cfg map[string]any) {
 	}
 }
 
+// secret validates one top-level `secrets:` entry. Two ways to provide a
+// secret are accepted, both opt-in via policy:
+//   - external: true (+ optional name): a secret created ahead of time with
+//     `docker secret create`, the standard Swarm way. It needs no plugin,
+//     but isn't scoped by swarm-gitops: an admin who names secrets
+//     predictably could let one repo reference another's, same as on any
+//     plain Swarm today.
+//   - driver: <secret_driver>: your own secrets driver plugin, which can
+//     scope secrets per repo/env using the labels swarm-gitops sets on the
+//     service and secret (see the README).
+//
+// `file:`/`environment:` are always rejected: the secret value would end up
+// in git or in the rendered stack file.
 func (c *checker) secret(name string, s map[string]any) {
 	w := "secrets." + name
-	for _, k := range []string{"file", "environment", "external", "name"} {
+	for _, k := range []string{"file", "environment"} {
 		if _, ok := s[k]; ok {
-			c.add(w+"."+k, "%q is not allowed for secrets, use driver: %s", k, c.p.SecretDriver)
+			c.add(w+"."+k, "%q is not allowed for secrets: the value would end up in git or the rendered stack", k)
 		}
+	}
+	external := isTrue(s["external"])
+	driver, hasDriver := s["driver"].(string)
+	switch {
+	case external:
+		if !c.p.AllowExternalSecrets {
+			c.add(w+".external", "external secrets are not allowed (%s)", c.secretHint())
+		}
+	case hasDriver && driver != "":
+		if c.p.SecretDriver == "" || driver != c.p.SecretDriver {
+			c.add(w+".driver", "driver %q is not allowed (%s)", driver, c.secretHint())
+		}
+	default:
+		c.add(w, "secret needs %s", c.secretHint())
+	}
+	if _, ok := s["name"]; ok && !external {
+		c.add(w+".name", "a custom secret name is only allowed together with external: true")
+	}
+}
+
+// secretHint describes the way(s) this policy accepts secrets, for messages.
+func (c *checker) secretHint() string {
+	var opts []string
+	if c.p.AllowExternalSecrets {
+		opts = append(opts, "external: true")
 	}
 	if c.p.SecretDriver != "" {
-		if d, _ := s["driver"].(string); d != c.p.SecretDriver {
-			c.add(w+".driver", "secrets must use driver %q", c.p.SecretDriver)
-		}
+		opts = append(opts, fmt.Sprintf("driver: %s", c.p.SecretDriver))
 	}
+	if len(opts) == 0 {
+		return "this policy does not allow any secrets; set allow_external_secrets or secret_driver"
+	}
+	return strings.Join(opts, " or ")
 }
 
 func checkLabels(c *checker, w string, labels any) {
@@ -451,6 +554,29 @@ func toInt(v any) (int, bool) {
 		return int(n), true
 	}
 	return 0, false
+}
+
+// portAllowed reports whether repo may publish the given rendered `ports:`
+// entry under PublishedPorts. By the time policy.Check runs, `docker stack
+// config` has already normalised every port to the long map form
+// (mode/target/published/protocol) regardless of how the compose file wrote
+// it, so that's the only shape this needs to parse.
+func (p *Policy) portAllowed(repo string, port any) bool {
+	m, ok := port.(map[string]any)
+	if !ok {
+		return false
+	}
+	mode, _ := m["mode"].(string)
+	published, ok := toInt(m["published"])
+	if !ok {
+		return false
+	}
+	for _, r := range p.PublishedPorts {
+		if r.Published == published && r.Mode == mode && contains(r.Repos, repo) {
+			return true
+		}
+	}
+	return false
 }
 
 func contains(l []string, s string) bool {

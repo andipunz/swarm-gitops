@@ -1,4 +1,4 @@
-module github.com/bergwacht-bayern/swarm-gitops
+module github.com/andipunz/swarm-gitops
 
 go 1.24.7
 

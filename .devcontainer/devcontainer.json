@@ -1,0 +1,26 @@
+{
+  "name": "swarm-gitops",
+  "image": "mcr.microsoft.com/devcontainers/go:1-1.24-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "version": "latest"
+    },
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "postCreateCommand": "go mod download",
+  // Idempotent: turns the dind daemon into a one-node Swarm so
+  // `go test -tags integration ./internal/controller/` works right away.
+  "postStartCommand": "docker info --format '{{.Swarm.LocalNodeState}}' 2>/dev/null | grep -q active || docker swarm init --advertise-addr 127.0.0.1",
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-yaml"
+      ]
+    }
+  },
+  "remoteEnv": {
+    "DOCKER_BUILDKIT": "1"
+  }
+}

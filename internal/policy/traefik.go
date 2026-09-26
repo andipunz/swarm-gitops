@@ -10,10 +10,10 @@ import (
 //
 //	traefik:
 //	  hosts:                        # allowed hostnames per environment ("*" = all)
-//	    prod: [bergwacht-bayern.de, "*.bergwacht-bayern.de"]
-//	    sandbox: ["*.sandbox.bergwacht-bayern.de"]
+//	    prod: [example.com, "*.example.com"]
+//	    sandbox: ["*.sandbox.example.com"]
 //	  reserved:                     # hostname (or *.pattern) -> only this repository
-//	    einsatz.bergwacht-bayern.de: einsatz-app
+//	    einsatz.example.com: einsatz-app
 //	  entrypoints: [websecure]      # optional allowlist
 //
 // Independently of this, a hostname belongs to the stack that routes it
@@ -155,6 +155,51 @@ func HostsFromLabels(labels map[string]string) []string {
 	return hosts
 }
 
+// TraefikObjects returns the Traefik object keys ("proto.kind.name", e.g.
+// "http.routers.app-prod") a service's deploy labels declare. Used to find
+// which router, service and middleware names are already taken on the
+// Swarm, the same way HostsFromLabels finds hostnames.
+func TraefikObjects(labels map[string]string) []string {
+	seen := map[string]bool{}
+	var res []string
+	for k := range labels {
+		proto, kind, name, ok := traefikObjectKey(k)
+		if !ok {
+			continue
+		}
+		key := proto + "." + kind + "." + name
+		if !seen[key] {
+			seen[key] = true
+			res = append(res, key)
+		}
+	}
+	sort.Strings(res)
+	return res
+}
+
+// traefikObjectKey parses a label key into (proto, kind, name), e.g.
+// "traefik.http.routers.app-prod.rule" -> ("http", "routers", "app-prod").
+func traefikObjectKey(labelKey string) (proto, kind, name string, ok bool) {
+	parts := strings.SplitN(strings.ToLower(labelKey), ".", 5)
+	if len(parts) < 4 || parts[0] != "traefik" {
+		return "", "", "", false
+	}
+	proto, kind, name = parts[1], parts[2], parts[3]
+	if proto != "http" && proto != "tcp" && proto != "udp" {
+		return "", "", "", false
+	}
+	switch kind {
+	case "routers", "services", "middlewares", "serverstransports":
+		return proto, kind, name, true
+	default:
+		return "", "", "", false
+	}
+}
+
+// TraefikKindLabel turns a Traefik object kind ("routers") into the singular
+// form used in messages ("router").
+func TraefikKindLabel(kind string) string { return strings.TrimSuffix(kind, "s") }
+
 func looseMatchers(rule string) []Matcher {
 	var ms []Matcher
 	for _, name := range []string{"Host(", "HostSNI(", "HostHeader("} {
@@ -193,32 +238,46 @@ func (c *checker) traefik(w string, containerLabels, deployLabels any) {
 	labels := labelStrings(deployLabels)
 	enabled := strings.EqualFold(labels["traefik.enable"], "true")
 	routers := map[string]*router{}
+	reported := map[string]bool{} // objKey -> a violation for it was already added
 	for _, k := range sortedStringKeys(labels) {
-		lk := strings.ToLower(k)
-		parts := strings.SplitN(lk, ".", 5)
-		if len(parts) < 4 || parts[0] != "traefik" {
+		proto, kind, name, ok := traefikObjectKey(k)
+		if !ok {
 			continue
 		}
-		proto, kind, name := parts[1], parts[2], parts[3]
-		if proto != "http" && proto != "tcp" && proto != "udp" {
+		objKey := proto + "." + kind + "." + name
+		// The name-prefix rule alone doesn't guarantee stacks can't collide
+		// (one stack's name can be a hyphen-prefix of another's), so also
+		// enforce first-come-first-served ownership, like hostnames. Each
+		// object is usually named by several labels (.rule, .entrypoints,
+		// ...); report a bad one once, not once per label.
+		owner, claimed := c.ctx.ObjectClaims[objKey]
+		claimed = claimed && owner != c.ctx.Stack
+		switch {
+		case !c.ownName(name):
+			if !reported[objKey] {
+				reported[objKey] = true
+				c.add(w+".deploy.labels", "Traefik %s name %q must start with the stack name (use %s-<name> or ${STACK})", TraefikKindLabel(kind), name, c.ctx.Stack)
+			}
+			continue
+		case claimed:
+			if !reported[objKey] {
+				reported[objKey] = true
+				c.add(w+".deploy.labels", "Traefik %s %q is already used by %s", TraefikKindLabel(kind), name, owner)
+			}
 			continue
 		}
-		switch kind {
-		case "routers", "services", "middlewares", "serverstransports":
-		default:
-			continue
-		}
-		if !c.ownName(name) {
-			c.add(w+".deploy.labels", "Traefik %s name %q must start with the stack name (use %s-<name> or ${STACK})", strings.TrimSuffix(kind, "s"), name, c.ctx.Stack)
-			continue
-		}
+		c.objects[objKey] = true
 		if kind != "routers" {
 			continue
 		}
 		if proto == "udp" {
-			c.add(w+".deploy.labels", "UDP routers are not allowed")
+			if !reported[objKey] {
+				reported[objKey] = true
+				c.add(w+".deploy.labels", "UDP routers are not allowed")
+			}
 			continue
 		}
+		parts := strings.SplitN(strings.ToLower(k), ".", 5)
 		r := routers[name]
 		if r == nil {
 			r = &router{proto: proto, attrs: map[string]string{}}

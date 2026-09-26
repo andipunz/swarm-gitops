@@ -14,14 +14,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/config"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/gh"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/policy"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/prepare"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/registry"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/render"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/state"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/swarm"
+	"github.com/andipunz/swarm-gitops/internal/config"
+	"github.com/andipunz/swarm-gitops/internal/gh"
+	"github.com/andipunz/swarm-gitops/internal/policy"
+	"github.com/andipunz/swarm-gitops/internal/prepare"
+	"github.com/andipunz/swarm-gitops/internal/registry"
+	"github.com/andipunz/swarm-gitops/internal/render"
+	"github.com/andipunz/swarm-gitops/internal/state"
+	"github.com/andipunz/swarm-gitops/internal/swarm"
 )
 
 // Git is the subset of the GitHub client the controller uses (faked in tests).
@@ -336,7 +336,7 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 		r.error(err)
 		return
 	}
-	claims, err := c.hostClaims(ctx, t.Stack)
+	cl, err := c.currentClaims(ctx, t.Stack)
 	if err != nil {
 		r.infraError(err)
 		return
@@ -344,7 +344,7 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 	res, err := render.Render(ctx, render.Input{
 		Stack: t.Stack, Repo: t.Repo, Env: t.Env, GitHubEnv: t.GitHubEnv, Ref: t.Branch.Name, Commit: commit,
 		URL: t.EnvCfg.URL, WorkDir: dir, Files: t.Files, Optional: t.Optional, VarsFile: t.EnvCfg.Vars, Policy: c.pol,
-		HostClaims: claims,
+		HostClaims: cl.hosts, ObjectClaims: cl.objects,
 	})
 	if err != nil {
 		r.error(err)
@@ -374,12 +374,12 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 		r.fail("Bind folders could not be prepared", "The stack was **not deployed**:\n\n```\n"+err.Error()+"\n```", "")
 		return
 	}
-	// Hostnames: re-check against the live Swarm while holding the lock, so
-	// two stacks can't claim the same hostname concurrently.
+	// Hostnames and Traefik object names: re-check against the live Swarm
+	// while holding the lock, so two stacks can't claim the same one concurrently.
 	c.claimsMu.Lock()
-	if conflict := c.hostConflicts(ctx, t.Stack, res.Hosts); conflict != "" {
+	if conflict := c.claimConflicts(ctx, t.Stack, res.Hosts, res.Objects); conflict != "" {
 		c.claimsMu.Unlock()
-		r.fail("Hostname already in use", conflict, "")
+		r.fail("Hostname or Traefik name already in use", conflict, "")
 		return
 	}
 	err = c.docker.Deploy(ctx, t.Stack, res.Path)
@@ -420,74 +420,115 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 	c.cleanWorkdirs(t.Stack, commit)
 }
 
-// hostClaims maps every hostname routed on the Swarm (by any service, managed
-// or not) to its stack, excluding the given stack.
-func (c *Controller) hostClaims(ctx context.Context, exclude string) (map[string]string, error) {
+// claims describes what is already taken on the live Swarm, by any service
+// managed or not.
+type claims struct {
+	hosts   map[string]string // hostname -> owner
+	objects map[string]string // Traefik object key ("proto.kind.name") -> owner
+}
+
+// currentClaims collects every hostname and Traefik object name routed on the
+// Swarm, excluding the given stack.
+func (c *Controller) currentClaims(ctx context.Context, exclude string) (claims, error) {
 	svcs, err := c.docker.AllServices(ctx)
 	if err != nil {
-		return nil, err
+		return claims{}, err
 	}
-	claims := map[string]string{}
+	cl := claims{hosts: map[string]string{}, objects: map[string]string{}}
 	for _, s := range svcs {
+		if s.Namespace() == exclude {
+			continue
+		}
 		owner := s.Namespace()
 		if owner == "" {
 			owner = "service " + s.Spec.Name
 		} else {
 			owner = "stack " + owner
 		}
-		if s.Namespace() == exclude {
-			continue
-		}
 		for _, h := range policy.HostsFromLabels(s.Spec.Labels) {
-			if _, taken := claims[h]; !taken {
-				claims[h] = owner
+			if _, taken := cl.hosts[h]; !taken {
+				cl.hosts[h] = owner
+			}
+		}
+		for _, o := range policy.TraefikObjects(s.Spec.Labels) {
+			if _, taken := cl.objects[o]; !taken {
+				cl.objects[o] = owner
 			}
 		}
 	}
-	return claims, nil
+	return cl, nil
 }
 
-func (c *Controller) hostConflicts(ctx context.Context, stack string, hosts []string) string {
-	if len(hosts) == 0 {
+func (c *Controller) claimConflicts(ctx context.Context, stack string, hosts, objects []string) string {
+	if len(hosts) == 0 && len(objects) == 0 {
 		return ""
 	}
-	claims, err := c.hostClaims(ctx, stack)
+	cl, err := c.currentClaims(ctx, stack)
 	if err != nil {
-		return "could not verify hostnames: " + err.Error()
+		return "could not verify hostnames and Traefik names: " + err.Error()
 	}
 	var msgs []string
 	for _, h := range hosts {
-		if owner, ok := claims[h]; ok {
+		if owner, ok := cl.hosts[h]; ok {
 			msgs = append(msgs, fmt.Sprintf("`%s` is already used by %s", h, owner))
+		}
+	}
+	for _, o := range objects {
+		if owner, ok := cl.objects[o]; ok {
+			msgs = append(msgs, fmt.Sprintf("Traefik %s is already used by %s", objectDesc(o), owner))
 		}
 	}
 	return strings.Join(msgs, "\n")
 }
 
+// objectDesc renders a Traefik object key ("proto.kind.name") for a report.
+func objectDesc(key string) string {
+	parts := strings.SplitN(key, ".", 3)
+	if len(parts) != 3 {
+		return key
+	}
+	return fmt.Sprintf("%s `%s` (%s)", policy.TraefikKindLabel(parts[1]), parts[2], parts[0])
+}
+
 // prepJobs groups bind folders by placement constraints: one job per group.
+// A prefix is mounted read-only into the job when none of its specs need to
+// create anything below it (prepare.Run then never touches the filesystem,
+// just os.Lstat) - the most important case being a bind rule on "/" itself.
 func prepJobs(binds []policy.Bind) []swarm.PrepJob {
-	byKey := map[string]*swarm.PrepJob{}
+	type build struct {
+		constraints  []string
+		prefixOrder  []string
+		prefixCreate map[string]bool
+		specs        []string
+	}
+	byKey := map[string]*build{}
 	var keys []string
 	for _, b := range binds {
 		key := strings.Join(b.Constraints, "\x00")
 		j := byKey[key]
 		if j == nil {
-			j = &swarm.PrepJob{Constraints: b.Constraints}
+			j = &build{constraints: b.Constraints, prefixCreate: map[string]bool{}}
 			byKey[key] = j
 			keys = append(keys, key)
 		}
-		if !contains(j.Prefixes, b.Prefix) {
-			j.Prefixes = append(j.Prefixes, b.Prefix)
+		if _, ok := j.prefixCreate[b.Prefix]; !ok {
+			j.prefixOrder = append(j.prefixOrder, b.Prefix)
 		}
+		j.prefixCreate[b.Prefix] = j.prefixCreate[b.Prefix] || b.Create
 		spec := prepare.Spec{Prefix: b.Prefix, Path: b.Source, Create: b.Create}.String()
-		if !contains(j.Specs, spec) {
-			j.Specs = append(j.Specs, spec)
+		if !contains(j.specs, spec) {
+			j.specs = append(j.specs, spec)
 		}
 	}
 	sort.Strings(keys)
 	var jobs []swarm.PrepJob
 	for _, k := range keys {
-		jobs = append(jobs, *byKey[k])
+		b := byKey[k]
+		job := swarm.PrepJob{Constraints: b.constraints, Specs: b.specs}
+		for _, p := range b.prefixOrder {
+			job.Prefixes = append(job.Prefixes, swarm.PrepPrefix{Path: p, ReadOnly: !b.prefixCreate[p]})
+		}
+		jobs = append(jobs, job)
 	}
 	return jobs
 }

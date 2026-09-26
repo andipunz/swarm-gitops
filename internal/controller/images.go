@@ -6,10 +6,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/registry"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/render"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/state"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/swarm"
+	"github.com/andipunz/swarm-gitops/internal/registry"
+	"github.com/andipunz/swarm-gitops/internal/render"
+	"github.com/andipunz/swarm-gitops/internal/state"
+	"github.com/andipunz/swarm-gitops/internal/swarm"
 )
 
 func (c *Controller) imageLoop(ctx context.Context) {

@@ -27,17 +27,18 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/api"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/config"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/controller"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/gh"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/policy"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/prepare"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/registry"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/render"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/spec"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/state"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/swarm"
+	"github.com/andipunz/swarm-gitops/internal/api"
+	"github.com/andipunz/swarm-gitops/internal/config"
+	"github.com/andipunz/swarm-gitops/internal/controller"
+	"github.com/andipunz/swarm-gitops/internal/gh"
+	"github.com/andipunz/swarm-gitops/internal/metrics"
+	"github.com/andipunz/swarm-gitops/internal/policy"
+	"github.com/andipunz/swarm-gitops/internal/prepare"
+	"github.com/andipunz/swarm-gitops/internal/registry"
+	"github.com/andipunz/swarm-gitops/internal/render"
+	"github.com/andipunz/swarm-gitops/internal/spec"
+	"github.com/andipunz/swarm-gitops/internal/state"
+	"github.com/andipunz/swarm-gitops/internal/swarm"
 )
 
 func main() {
@@ -102,13 +103,17 @@ func serve() error {
 	if err != nil {
 		return err
 	}
-	key, err := os.ReadFile(cfg.AppKeyFile)
-	if err != nil {
-		return err
-	}
-	client, err := gh.New(cfg.Org, cfg.APIURL, cfg.AppID, key)
-	if err != nil {
-		return err
+	var client *gh.Client
+	if cfg.Token != "" {
+		client = gh.NewWithToken(cfg.Org, cfg.APIURL, cfg.Token)
+	} else {
+		key, err := os.ReadFile(cfg.AppKeyFile)
+		if err != nil {
+			return err
+		}
+		if client, err = gh.New(cfg.Org, cfg.APIURL, cfg.AppID, key); err != nil {
+			return err
+		}
 	}
 	pol, err := policy.Load(cfg.PolicyFile)
 	if err != nil {
@@ -138,6 +143,13 @@ func serve() error {
 			log.Error("admin socket", "err", err)
 		}
 	}()
+	if cfg.MetricsAddr != "" {
+		go func() {
+			if err := metrics.Serve(ctx, cfg.MetricsAddr, ctrl); err != nil {
+				log.Error("metrics listener", "err", err)
+			}
+		}()
+	}
 	log.Info("swarm-gitops started", "org", cfg.Org, "scan", cfg.ScanInterval.String(), "images", cfg.ImageInterval.String(), "dry_run", cfg.DryRun)
 	ctrl.Run(ctx)
 	return nil

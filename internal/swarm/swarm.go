@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/render"
+	"github.com/andipunz/swarm-gitops/internal/render"
 )
 
 // Service is the subset of `docker service inspect` we use.
@@ -122,6 +122,39 @@ func (d *Docker) ManagedStacks(ctx context.Context) (map[string][]Service, error
 // StackServices returns all services of a stack, managed or not.
 func (d *Docker) StackServices(ctx context.Context, stack string) ([]Service, error) {
 	return d.Services(ctx, "com.docker.stack.namespace="+stack)
+}
+
+// ReplicaCount is one service's desired and currently running replica count.
+type ReplicaCount struct {
+	Desired int // -1 for global services (no fixed desired count)
+	Running int
+}
+
+// ReplicaCounts takes one point-in-time snapshot of a stack's services,
+// without waiting for convergence like WaitRollout does. Used for metrics.
+func (d *Docker) ReplicaCounts(ctx context.Context, stack string) (map[string]ReplicaCount, error) {
+	svcs, err := d.StackServices(ctx, stack)
+	if err != nil {
+		return nil, err
+	}
+	res := make(map[string]ReplicaCount, len(svcs))
+	for _, s := range svcs {
+		rc := ReplicaCount{Desired: -1}
+		if s.Spec.Mode.Replicated != nil && s.Spec.Mode.Replicated.Replicas != nil {
+			rc.Desired = int(*s.Spec.Mode.Replicated.Replicas)
+		}
+		tasks, err := d.Tasks(ctx, s.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, t := range tasks {
+			if t.DesiredState == "Running" && strings.HasPrefix(t.CurrentState, "Running") {
+				rc.Running++
+			}
+		}
+		res[s.Spec.Name] = rc
+	}
+	return res, nil
 }
 
 // Deploy runs docker stack deploy with --prune (services removed from the file are removed).
@@ -349,8 +382,18 @@ func (d *Docker) AllServices(ctx context.Context) ([]Service, error) {
 // PrepJob creates/verifies bind folders on all nodes matching Constraints.
 type PrepJob struct {
 	Constraints []string
-	Prefixes    []string // static folders mounted into the job at /host<prefix>
-	Specs       []string // prepare.Spec strings
+	Prefixes    []PrepPrefix // static folders mounted into the job at /host<prefix>
+	Specs       []string     // prepare.Spec strings
+}
+
+// PrepPrefix is one static folder the prep job needs mounted to do its work.
+type PrepPrefix struct {
+	Path string
+	// ReadOnly is true when none of this job's specs below Path need to
+	// create anything there (prepare.Run only ever calls os.Lstat for a
+	// check-mode spec) - the prep container then gets no write access to it
+	// at all, which matters most for a prefix as broad as "/".
+	ReadOnly bool
 }
 
 // Prepare runs each job as a global-job service with the controller image and
@@ -372,7 +415,11 @@ func (d *Docker) Prepare(ctx context.Context, stack, image, owner string, jobs [
 			args = append(args, "--constraint", c)
 		}
 		for _, p := range job.Prefixes {
-			args = append(args, "--mount", "type=bind,source="+p+",target=/host"+p)
+			mount := "type=bind,source=" + p.Path + ",target=/host" + p.Path
+			if p.ReadOnly {
+				mount += ",readonly"
+			}
+			args = append(args, "--mount", mount)
 		}
 		args = append(args, image, "prepare")
 		if owner != "" {

@@ -6,7 +6,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/spec"
+	"github.com/andipunz/swarm-gitops/internal/spec"
 )
 
 // BindRule allows bind mounts below a host folder.
@@ -18,11 +18,21 @@ import (
 //	    read_only: true                 # may only be mounted read-only
 //	  - path: /mnt/nas/einsatz
 //	    repos: [einsatz-app]            # only these repositories
+//	  - path: /
+//	    read_only: true
+//	    repos: [observability]
+//	    services: [node-exporter]       # only a service with this exact compose name
+//
+// Services narrows a rule below Repos: without it, every service of an
+// allowed repo may use the rule, which is fine for an ordinary data folder
+// but too wide for something like a read-only host root - grant that to one
+// named service only, not to whatever else the repo's compose files define.
 type BindRule struct {
 	Path     string   `yaml:"path"`
 	Create   bool     `yaml:"create"`
 	ReadOnly bool     `yaml:"read_only"`
 	Repos    []string `yaml:"repos"`
+	Services []string `yaml:"services"`
 }
 
 // Bind is one bind mount of a rendered stack that passed the rules.
@@ -60,17 +70,22 @@ func (r BindRule) Prefix() string {
 	return path.Clean(p)
 }
 
-func (r BindRule) appliesTo(repo string) bool {
-	if len(r.Repos) == 0 {
-		return true
+func (r BindRule) appliesTo(repo, service string) bool {
+	if len(r.Repos) != 0 && !contains(r.Repos, repo) {
+		return false
 	}
-	return contains(r.Repos, repo)
+	if len(r.Services) != 0 && !contains(r.Services, service) {
+		return false
+	}
+	return true
 }
 
 // DataDir is the first creatable bind folder of a stack (exposed as ${STACK_DATA}).
+// Rules scoped to specific services are skipped: STACK_DATA is a per-stack
+// default, not tied to one service.
 func (p *Policy) DataDir(repo, env, stack string) string {
 	for _, r := range p.BindMounts {
-		if r.Create && r.appliesTo(repo) {
+		if r.Create && len(r.Services) == 0 && r.appliesTo(repo, "") {
 			return r.Root(repo, env, stack)
 		}
 	}
@@ -97,7 +112,7 @@ func (c *checker) bind(service string, constraints []string, w, src string, read
 	var bestRoot string
 	for i := range c.p.BindMounts {
 		r := c.p.BindMounts[i]
-		if !r.appliesTo(c.ctx.Repo) {
+		if !r.appliesTo(c.ctx.Repo, service) {
 			continue
 		}
 		root := r.Root(c.ctx.Repo, c.ctx.Env, c.ctx.Stack)
@@ -108,7 +123,7 @@ func (c *checker) bind(service string, constraints []string, w, src string, read
 	if best == nil {
 		var allowed []string
 		for _, r := range c.p.BindMounts {
-			if r.appliesTo(c.ctx.Repo) {
+			if r.appliesTo(c.ctx.Repo, service) {
 				allowed = append(allowed, r.Root(c.ctx.Repo, c.ctx.Env, c.ctx.Stack))
 			}
 		}

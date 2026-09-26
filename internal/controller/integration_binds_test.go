@@ -12,11 +12,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/bergwacht-bayern/swarm-gitops/internal/config"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/policy"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/registry"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/state"
-	"github.com/bergwacht-bayern/swarm-gitops/internal/swarm"
+	"github.com/andipunz/swarm-gitops/internal/config"
+	"github.com/andipunz/swarm-gitops/internal/policy"
+	"github.com/andipunz/swarm-gitops/internal/registry"
+	"github.com/andipunz/swarm-gitops/internal/state"
+	"github.com/andipunz/swarm-gitops/internal/swarm"
 )
 
 const bindRoot = "/tmp/sg-it"
