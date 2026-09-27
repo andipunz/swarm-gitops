@@ -246,12 +246,53 @@ func Render(ctx context.Context, in Input) (*Result, error) {
 		l[LabelCommit] = in.Commit
 		l[LabelSpec] = res.SpecHash
 	}
+	// stack.rendered.yml is interpolated a second time when `docker stack
+	// deploy -c` loads it (compose always interpolates on load; there's no
+	// "already done" flag). `docker stack config` above already unescaped
+	// any `$$` a repo wrote for a literal `$` (htpasswd hashes, cron specs,
+	// regexes, ...) into a single `$` - which the second pass then rejects
+	// as an invalid, dangling `$`-expression. Re-escape every `$` back to
+	// `$$` here so that second pass restores exactly the literal value the
+	// repo's own compose file meant, the same as a plain, one-shot
+	// `docker stack deploy` on the original files would have produced.
+	doc = escapeDollar(doc).(map[string]any)
 	out, err := yaml.Marshal(doc)
 	if err != nil {
 		return nil, err
 	}
 	res.Path = filepath.Join(in.WorkDir, "stack.rendered.yml")
 	return res, os.WriteFile(res.Path, out, 0o600)
+}
+
+// escapeDollar doubles every literal "$" in every string found anywhere in
+// v (maps, slices, or a bare string), leaving non-string values untouched.
+func escapeDollar(v any) any {
+	switch x := v.(type) {
+	case string:
+		return strings.ReplaceAll(x, "$", "$$")
+	case map[string]any:
+		for k, val := range x {
+			x[k] = escapeDollar(val)
+		}
+		return x
+	case map[string]string:
+		for k, val := range x {
+			x[k] = strings.ReplaceAll(val, "$", "$$")
+		}
+		return x
+	case []any:
+		for i, val := range x {
+			x[i] = escapeDollar(val)
+		}
+		return x
+	case []string:
+		for i, val := range x {
+			x[i] = strings.ReplaceAll(val, "$", "$$")
+		}
+		return x
+	default:
+		return v
+	}
 }
 
 func stackConfig(ctx context.Context, dir string, files []string, env map[string]string) ([]byte, error) {

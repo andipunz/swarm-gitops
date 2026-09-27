@@ -133,6 +133,52 @@ func TestRenderOK(t *testing.T) {
 	}
 }
 
+// Regression test: `docker stack deploy -c stack.rendered.yml` interpolates
+// the file a second time when loading it (compose always interpolates on
+// load). A literal "$" a repo escaped as "$$" for THIS render's own
+// `docker stack config` pass (htpasswd hashes, cron specs, regexes, ...)
+// used to come out the other side as a lone, un-escaped "$" - rejected by
+// the second pass as an invalid $-expression, so the stack never deployed
+// even though the render itself reported success.
+func TestRenderSurvivesSecondInterpolationPass(t *testing.T) {
+	stack := "services:\n" +
+		"  node-exporter:\n" +
+		"    image: ghcr.io/example/node-exporter:latest\n" +
+		"    command:\n" +
+		"      - \"--collector.filesystem.mount-points-exclude=^/(sys|proc|dev)($$|/)\"\n"
+	dir := setup(t, map[string]string{"stack.yml": stack})
+
+	res, err := Render(context.Background(), Input{
+		Stack: "obs-prod", Repo: "observability", Env: "prod", GitHubEnv: "prod", Ref: "main", Commit: "c1",
+		WorkDir: dir, Files: []string{"stack.yml"}, Policy: pol(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Violations) > 0 {
+		t.Fatalf("violations: %v", res.Violations)
+	}
+
+	rendered, err := os.ReadFile(res.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(rendered), "($$|/)") {
+		t.Errorf("stack.rendered.yml should still have the escaped $$ (one more interpolation pass is coming): %s", rendered)
+	}
+
+	// Simulate `docker stack deploy`'s own interpolation of the already-
+	// rendered file - this must not error, and must produce the single "$"
+	// the original compose file meant.
+	final, err := stackConfig(context.Background(), dir, []string{filepath.Base(res.Path)}, nil)
+	if err != nil {
+		t.Fatalf("second interpolation pass (as docker stack deploy would do it) failed: %v", err)
+	}
+	if !strings.Contains(string(final), "($|/)") {
+		t.Errorf("second pass should resolve to a literal single $: %s", final)
+	}
+}
+
 func TestRenderViolations(t *testing.T) {
 	cases := map[string]struct {
 		stack string
