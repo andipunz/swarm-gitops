@@ -47,8 +47,8 @@ func FromEnv() (*Config, error) {
 	c := &Config{
 		Org:              os.Getenv("GITHUB_ORG"),
 		APIURL:           env("GITHUB_API_URL", "https://api.github.com"),
-		EnvProperty:      env("ENV_PROPERTY", "swarm-environments"),
-		RequireProtected: list(env("REQUIRE_PROTECTED", "prod")),
+		EnvProperty:      envSet("ENV_PROPERTY", "swarm-environments"),
+		RequireProtected: list(envSet("REQUIRE_PROTECTED", "prod")),
 		DataDir:          env("DATA_DIR", "/data"),
 		PolicyFile:       os.Getenv("POLICY_FILE"),
 		Socket:           env("SOCKET", "/run/swarm-gitops/api.sock"),
@@ -144,6 +144,18 @@ func (c *Config) loadAuth() error {
 
 func env(k, def string) string {
 	if v := os.Getenv(k); v != "" {
+		return v
+	}
+	return def
+}
+
+// envSet is like env, but a variable explicitly set to "" is honored as an
+// empty value instead of falling back to def - unlike env, which can't tell
+// "unset" and "set to empty" apart. ENV_PROPERTY and REQUIRE_PROTECTED both
+// treat "" as a meaningful, documented value ("all envs allowed" / "no envs
+// require protection"), so they need this instead of env.
+func envSet(k, def string) string {
+	if v, ok := os.LookupEnv(k); ok {
 		return v
 	}
 	return def

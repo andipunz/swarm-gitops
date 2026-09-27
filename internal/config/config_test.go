@@ -79,3 +79,52 @@ func TestLoadAuth(t *testing.T) {
 		}
 	})
 }
+
+func TestEnvSet(t *testing.T) {
+	const key = "SWARM_GITOPS_TEST_ENVSET"
+
+	t.Run("unset falls back to the default", func(t *testing.T) {
+		os.Unsetenv(key)
+		if v := envSet(key, "def"); v != "def" {
+			t.Fatalf("got %q, want %q", v, "def")
+		}
+	})
+
+	t.Run("explicitly empty is honored, not defaulted", func(t *testing.T) {
+		t.Setenv(key, "")
+		if v := envSet(key, "def"); v != "" {
+			t.Fatalf("got %q, want empty", v)
+		}
+	})
+
+	t.Run("non-empty value is used as-is", func(t *testing.T) {
+		t.Setenv(key, "value")
+		if v := envSet(key, "def"); v != "value" {
+			t.Fatalf("got %q, want %q", v, "value")
+		}
+	})
+}
+
+// Regression test: ENV_PROPERTY="" and REQUIRE_PROTECTED="" used to
+// silently fall back to their non-empty defaults (env(), not envSet()),
+// making "no custom property gate" / "no protected-branch requirement"
+// unreachable via configuration despite being documented, valid values.
+func TestFromEnvHonorsExplicitEmpty(t *testing.T) {
+	clearAuthEnv()
+	t.Setenv("GITHUB_TOKEN", "ghp_x")
+	t.Setenv("GITHUB_ORG", "example")
+	t.Setenv("PREP_IMAGE", "ghcr.io/example/swarm-gitops:latest")
+	t.Setenv("ENV_PROPERTY", "")
+	t.Setenv("REQUIRE_PROTECTED", "")
+
+	c, err := FromEnv()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.EnvProperty != "" {
+		t.Errorf("EnvProperty = %q, want empty", c.EnvProperty)
+	}
+	if len(c.RequireProtected) != 0 {
+		t.Errorf("RequireProtected = %v, want empty", c.RequireProtected)
+	}
+}
