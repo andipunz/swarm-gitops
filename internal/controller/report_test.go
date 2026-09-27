@@ -104,3 +104,38 @@ func TestRunDoneLogsSummaryWithoutCheckRun(t *testing.T) {
 		t.Fatal("run should be marked finished")
 	}
 }
+
+// Regression test: done() used to mark a target's commit "processed"
+// unconditionally, including under DRY_RUN (where nothing was actually
+// attempted - not even a policy violation was acted on). That made
+// flipping DRY_RUN off silently deploy nothing: processTarget's "already
+// processed this commit" check skipped every target that had ever gotten a
+// dry-run verdict, with no error and no log line, until a new commit landed
+// or someone ran `redeploy`/`adopt` by hand.
+func TestRunDoneUnderDryRunDoesNotMarkProcessed(t *testing.T) {
+	target := Target{Repo: "example", Env: "prod", GitHubEnv: "prod", Branch: gh.Branch{Name: "main", Commit: "abc123"}}
+
+	t.Run("dry run: commit is not marked processed", func(t *testing.T) {
+		c := newTestController(t, &config.Config{Token: "ghp_x", DryRun: true}, &stubGit{})
+		r := newRun(c, target, c.log)
+		r.done("neutral", "Dry run: would deploy", "rendered fine", "")
+
+		var processed string
+		c.st.View(func(d *state.Data) { processed = d.Processed[target.Stack] })
+		if processed != "" {
+			t.Fatalf("Processed[%s] = %q, want empty under dry run", target.Stack, processed)
+		}
+	})
+
+	t.Run("live run: commit is marked processed as before", func(t *testing.T) {
+		c := newTestController(t, &config.Config{Token: "ghp_x", DryRun: false}, &stubGit{})
+		r := newRun(c, target, c.log)
+		r.done("success", "Deployed", "", "")
+
+		var processed string
+		c.st.View(func(d *state.Data) { processed = d.Processed[target.Stack] })
+		if processed != target.Branch.Commit {
+			t.Fatalf("Processed[%s] = %q, want %q", target.Stack, processed, target.Branch.Commit)
+		}
+	})
+}

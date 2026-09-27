@@ -89,10 +89,18 @@ func (r *run) done(conclusion, title, summary, text string) {
 	r.c.cacheMu.Lock()
 	delete(r.c.attempts, key)
 	r.c.cacheMu.Unlock()
-	_ = r.c.st.Update(func(d *state.Data) {
-		d.Processed[r.t.Stack] = r.t.Branch.Commit
-		delete(d.Force, r.t.Stack)
-	})
+	// Under DRY_RUN, nothing was actually attempted - not even a policy
+	// violation was acted on - so don't mark the commit processed. Otherwise
+	// flipping DRY_RUN off later silently deploys nothing: processTarget's
+	// "already processed this commit" check would skip every target that
+	// got a dry-run verdict, with no error and no log line, until someone
+	// pushes a new commit or manually runs `redeploy`/`adopt`.
+	if !r.c.cfg.DryRun {
+		_ = r.c.st.Update(func(d *state.Data) {
+			d.Processed[r.t.Stack] = r.t.Branch.Commit
+			delete(d.Force, r.t.Stack)
+		})
+	}
 	if r.check == nil {
 		// No check run to carry summary/text (token auth, or creation
 		// failed) - log it instead, or e.g. a policy violation's detail
