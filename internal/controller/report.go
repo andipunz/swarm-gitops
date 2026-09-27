@@ -27,6 +27,13 @@ type run struct {
 
 func newRun(c *Controller, t Target, log *slog.Logger) *run {
 	r := &run{c: c, t: t, log: log}
+	// The Checks API is GitHub-App-only - a PAT gets a 403 on every single
+	// call, not a permission that can be granted to it. Skip creating one
+	// entirely under token auth instead of warning on every scan; done()
+	// logs the result detail instead so it isn't silently lost.
+	if c.cfg.Token != "" {
+		return r
+	}
 	cr, err := c.git.CreateCheckRun(t.Repo, t.Branch.Commit, "swarm / "+t.GitHubEnv)
 	if err != nil {
 		log.Warn("create check run failed", "err", err)
@@ -86,7 +93,14 @@ func (r *run) done(conclusion, title, summary, text string) {
 		d.Processed[r.t.Stack] = r.t.Branch.Commit
 		delete(d.Force, r.t.Stack)
 	})
-	r.log.Info("done", "result", conclusion, "title", title)
+	if r.check == nil {
+		// No check run to carry summary/text (token auth, or creation
+		// failed) - log it instead, or e.g. a policy violation's detail
+		// would otherwise never surface anywhere.
+		r.log.Info("done", "result", conclusion, "title", title, "summary", summary)
+	} else {
+		r.log.Info("done", "result", conclusion, "title", title)
+	}
 }
 
 func (r *run) fail(title, summary, text string) { r.done("failure", title, summary, text) }
