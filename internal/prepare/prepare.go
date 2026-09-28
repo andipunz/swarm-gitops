@@ -82,19 +82,27 @@ func one(root string, s Spec, uid, gid int) error {
 	if rel == "" {
 		return nil
 	}
-	for _, part := range strings.Split(rel, "/") {
+	parts := strings.Split(rel, "/")
+	for i, part := range parts {
 		if part == "" || part == "." || part == ".." {
 			return fmt.Errorf("invalid path component %q", part)
 		}
 		cur += "/" + part
 		shown = path.Join(shown, part)
+		last := i == len(parts)-1
 		fi, err := os.Lstat(cur)
 		switch {
 		case err == nil && fi.Mode()&fs.ModeSymlink != 0:
 			return fmt.Errorf("%s is a symlink, refusing to mount it", shown)
-		case err == nil && !fi.IsDir():
+		case err == nil && !fi.IsDir() && !last:
 			return fmt.Errorf("%s exists but is not a directory", shown)
 		case err == nil:
+			// The leaf may be a non-directory (e.g. a Unix socket like
+			// /var/run/docker.sock) - Docker can bind-mount a file just as
+			// well as a directory. Only existence and "not a symlink" are
+			// verified for it; it's never created or chowned (Create only
+			// ever makes directories, never a substitute for a missing
+			// file/socket - see below).
 			continue
 		case !errors.Is(err, fs.ErrNotExist):
 			return err

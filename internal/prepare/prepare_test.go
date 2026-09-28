@@ -66,6 +66,12 @@ func TestRun(t *testing.T) {
 	if err := Run(root, []Spec{{Prefix: "/srv/swarm", Path: "/srv/swarm/file/x", Create: true}}, ""); err == nil {
 		t.Fatal("expected error for file in path")
 	}
+	// but a non-directory leaf itself (e.g. a socket like
+	// /var/run/docker.sock) is fine - Docker can bind-mount a file just as
+	// well as a directory, only existence and "not a symlink" matter.
+	if err := Run(root, []Spec{{Prefix: "/srv/swarm", Path: "/srv/swarm/file"}}, ""); err != nil {
+		t.Fatalf("non-directory leaf should be accepted: %v", err)
+	}
 	// outside the prefix
 	if err := Run(root, []Spec{{Prefix: "/srv/swarm", Path: "/etc/x", Create: true}}, ""); err == nil {
 		t.Fatal("expected error outside prefix")
