@@ -107,9 +107,8 @@ func (c *Client) Branches(repo string) ([]Branch, error) {
     refs(refPrefix:"refs/heads/", first:100, after:$cursor){
       pageInfo{hasNextPage endCursor}
       nodes{ name target{ ... on Commit{
-        oid messageHeadline tree{oid}
+        oid messageHeadline tree{ oid entries{ name type oid } }
         parents(first:1){ totalCount nodes{ tree{oid} } }
-        swarm: file(path:".swarm"){ type oid }
       } } }
     }
   }
@@ -130,7 +129,12 @@ func (c *Client) Branches(repo string) ([]Branch, error) {
 							Oid             string `json:"oid"`
 							MessageHeadline string `json:"messageHeadline"`
 							Tree            struct {
-								Oid string `json:"oid"`
+								Oid     string `json:"oid"`
+								Entries []struct {
+									Name string `json:"name"`
+									Type string `json:"type"`
+									Oid  string `json:"oid"`
+								} `json:"entries"`
 							} `json:"tree"`
 							Parents struct {
 								TotalCount int `json:"totalCount"`
@@ -140,10 +144,6 @@ func (c *Client) Branches(repo string) ([]Branch, error) {
 									} `json:"tree"`
 								} `json:"nodes"`
 							} `json:"parents"`
-							Swarm *struct {
-								Type string `json:"type"`
-								Oid  string `json:"oid"`
-							} `json:"swarm"`
 						} `json:"target"`
 					} `json:"nodes"`
 				} `json:"refs"`
@@ -160,8 +160,15 @@ func (c *Client) Branches(repo string) ([]Branch, error) {
 			if n.Target.Parents.TotalCount == 1 && len(n.Target.Parents.Nodes) == 1 {
 				b.ParentTree = n.Target.Parents.Nodes[0].Tree.Oid
 			}
-			if n.Target.Swarm != nil && n.Target.Swarm.Type == "tree" {
-				b.SwarmTree = n.Target.Swarm.Oid
+			// .swarm is looked up in the root tree's entries rather than with
+			// file(path:".swarm"): GitHub answers file() on a branch without
+			// .swarm with a NOT_FOUND error, not null, and GraphQL() fails the
+			// whole call on any error - so a single feature branch without
+			// .swarm used to block every branch of the repo.
+			for _, e := range n.Target.Tree.Entries {
+				if e.Name == ".swarm" && e.Type == "tree" {
+					b.SwarmTree = e.Oid
+				}
 			}
 			res = append(res, b)
 		}

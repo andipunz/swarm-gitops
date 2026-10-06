@@ -198,3 +198,41 @@ func TestBranchProtected(t *testing.T) {
 		})
 	}
 }
+
+// A branch without .swarm must simply come back with an empty SwarmTree, not
+// fail the listing for every branch of the repo. The fake rejects
+// file(path:".swarm") the way GitHub does (a NOT_FOUND error), so a
+// regression back to that query fails here.
+func TestBranchesWithoutSwarm(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "file(path:") {
+			io.WriteString(w, `{"data":null,"errors":[{"type":"NOT_FOUND","message":"Could not resolve file for path '.swarm'."}]}`)
+			return
+		}
+		io.WriteString(w, `{"data":{"repository":{"refs":{"pageInfo":{"hasNextPage":false},"nodes":[
+		  {"name":"develop","target":{"oid":"c1","messageHeadline":"m","tree":{"oid":"r1","entries":[{"name":"README.md","type":"blob","oid":"x"},{"name":".swarm","type":"tree","oid":"s1"}]},"parents":{"totalCount":1,"nodes":[{"tree":{"oid":"r0"}}]}}},
+		  {"name":"feature/x","target":{"oid":"c2","messageHeadline":"m","tree":{"oid":"r2","entries":[{"name":"README.md","type":"blob","oid":"x"}]},"parents":{"totalCount":1,"nodes":[{"tree":{"oid":"r0"}}]}}},
+		  {"name":"odd","target":{"oid":"c3","messageHeadline":"m","tree":{"oid":"r3","entries":[{"name":".swarm","type":"blob","oid":"f1"}]},"parents":{"totalCount":0,"nodes":[]}}}]}}}}`)
+	}))
+	defer srv.Close()
+
+	c := NewWithToken("bw", srv.URL, "tok")
+	bs, err := c.Branches("app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, b := range bs {
+		got[b.Name] = b.SwarmTree
+	}
+	want := map[string]string{"develop": "s1", "feature/x": "", "odd": ""}
+	for name, tree := range want {
+		if g, ok := got[name]; !ok || g != tree {
+			t.Errorf("%s: SwarmTree = %q (listed: %v), want %q", name, g, ok, tree)
+		}
+	}
+	if len(got) != len(want) {
+		t.Errorf("got %d branches, want %d", len(got), len(want))
+	}
+}
