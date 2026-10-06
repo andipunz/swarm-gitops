@@ -59,7 +59,18 @@ func (c *Controller) CheckImages(ctx context.Context) {
 		if !mu.TryLock() {
 			continue // a deployment is running; check again next round
 		}
-		c.updateStackImages(ctx, stack, stacks[stack], resolve)
+		// Re-read the services now that the lock is held: the snapshot above
+		// only supplies stack names. This loop waits out each changed
+		// stack's rollout, so by the time it reaches a stack the snapshot can
+		// be minutes old - and if that stack was redeployed meanwhile (e.g.
+		// :edge -> :develop), acting on its pre-deploy spec would re-point
+		// the service at the old tag's digest under the new tag's label.
+		svcs, err := c.docker.StackServices(ctx, stack)
+		if err != nil {
+			c.log.Error("image check: list services", "stack", stack, "err", err)
+		} else if len(svcs) > 0 {
+			c.updateStackImages(ctx, stack, svcs, resolve)
+		}
 		mu.Unlock()
 	}
 	_ = c.st.Update(func(d *state.Data) { d.LastImageCheck = time.Now() })
