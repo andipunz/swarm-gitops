@@ -86,20 +86,8 @@ func (d *Docker) mutate(ctx context.Context, timeout time.Duration, args ...stri
 
 // Services returns services matching a label filter (e.g. "swarm-gitops.managed=true").
 func (d *Docker) Services(ctx context.Context, filter string) ([]Service, error) {
-	out, err := d.run(ctx, 30*time.Second, "service", "ls", "-q", "--filter", "label="+filter)
+	svcs, err := d.listAndInspect(ctx, "--filter", "label="+filter)
 	if err != nil {
-		return nil, err
-	}
-	ids := strings.Fields(string(out))
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	out, err = d.run(ctx, 60*time.Second, append([]string{"service", "inspect"}, ids...)...)
-	if err != nil {
-		return nil, err
-	}
-	var svcs []Service
-	if err := json.Unmarshal(out, &svcs); err != nil {
 		return nil, err
 	}
 	sort.Slice(svcs, func(i, j int) bool { return svcs[i].Spec.Name < svcs[j].Spec.Name })
@@ -363,20 +351,42 @@ func (d *Docker) attachLogs(ctx context.Context, reports []ServiceReport) {
 
 // AllServices returns every service on the Swarm (managed or not).
 func (d *Docker) AllServices(ctx context.Context) ([]Service, error) {
-	out, err := d.run(ctx, 30*time.Second, "service", "ls", "-q")
-	if err != nil {
-		return nil, err
+	return d.listAndInspect(ctx)
+}
+
+// inspectAttempts bounds listAndInspect's retries.
+const inspectAttempts = 3
+
+// listAndInspect runs `docker service ls -q <lsArgs>` and inspects every
+// listed service. A service can disappear between the two calls - most often
+// another stack's bind-folder prep job (Prepare), which removes itself once it
+// finished - and `docker service inspect` then fails the whole call with "no
+// such service". That used to fail an unrelated stack's hostname check
+// ("could not verify hostnames and Traefik names") whenever a deploy with
+// bind mounts ran at the same time. Re-list and try again in that case.
+func (d *Docker) listAndInspect(ctx context.Context, lsArgs ...string) ([]Service, error) {
+	for attempt := 1; ; attempt++ {
+		out, err := d.run(ctx, 30*time.Second, append([]string{"service", "ls", "-q"}, lsArgs...)...)
+		if err != nil {
+			return nil, err
+		}
+		ids := strings.Fields(string(out))
+		if len(ids) == 0 {
+			return nil, nil
+		}
+		out, err = d.run(ctx, 60*time.Second, append([]string{"service", "inspect"}, ids...)...)
+		if err != nil {
+			if attempt < inspectAttempts && strings.Contains(err.Error(), "no such service") {
+				continue
+			}
+			return nil, err
+		}
+		var svcs []Service
+		if err := json.Unmarshal(out, &svcs); err != nil {
+			return nil, err
+		}
+		return svcs, nil
 	}
-	ids := strings.Fields(string(out))
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	out, err = d.run(ctx, 60*time.Second, append([]string{"service", "inspect"}, ids...)...)
-	if err != nil {
-		return nil, err
-	}
-	var svcs []Service
-	return svcs, json.Unmarshal(out, &svcs)
 }
 
 // PrepJob creates/verifies bind folders on all nodes matching Constraints.
