@@ -417,6 +417,44 @@ func TestBindServiceScoping(t *testing.T) {
 	}
 }
 
+func TestBindExceptRepos(t *testing.T) {
+	p := Default()
+	p.BindMounts = []BindRule{
+		{Path: "/opt/data/{repo}/{env}", Create: true, ExceptRepos: []string{"traefik", "swarm-gitops"}},
+	}
+	doc := func(src string) map[string]any {
+		return map[string]any{"services": map[string]any{"app": map[string]any{
+			"image":   "ghcr.io/example/app:1",
+			"volumes": []any{map[string]any{"type": "bind", "source": src, "target": "/data"}},
+		}}}
+	}
+	cases := []struct {
+		name, repo, src, want string // want "" = ok
+	}{
+		{"ordinary repo: ok", "api-service", "/opt/data/api-service/prod/db", ""},
+		{"excepted repo: denied", "traefik", "/opt/data/traefik/prod", "not allowed"},
+		{"excepted by slug: denied", "Swarm_GitOps", "/opt/data/swarm-gitops/prod", "not allowed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r := check(p, doc(tc.src), tc.repo, "prod", nil)
+			got := strings.Join(r.Violations, "\n")
+			if tc.want == "" && got != "" {
+				t.Fatalf("unexpected violations:\n%s", got)
+			}
+			if tc.want != "" && !strings.Contains(got, tc.want) {
+				t.Fatalf("want %q, got:\n%s", tc.want, got)
+			}
+		})
+	}
+	if d := p.DataDir("traefik", "prod", "traefik-prod"); d != "" {
+		t.Fatalf("an excepted repo must not get a STACK_DATA folder, got %q", d)
+	}
+	if d := p.DataDir("api-service", "prod", "api-service-prod"); d != "/opt/data/api-service/prod" {
+		t.Fatalf("DataDir = %q", d)
+	}
+}
+
 func TestBindMountsRootLoadValidation(t *testing.T) {
 	write := func(t *testing.T, content string) string {
 		t.Helper()

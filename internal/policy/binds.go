@@ -22,17 +22,25 @@ import (
 //	    read_only: true
 //	    repos: [observability]
 //	    services: [node-exporter]       # only a service with this exact compose name
+//	  - path: /srv/{repo}/{env}
+//	    except_repos: [traefik]         # every repo but these
 //
 // Services narrows a rule below Repos: without it, every service of an
 // allowed repo may use the rule, which is fine for an ordinary data folder
 // but too wide for something like a read-only host root - grant that to one
 // named service only, not to whatever else the repo's compose files define.
+//
+// ExceptRepos keeps a {repo} rule away from host folders that belong to
+// something else: with /srv/{repo}/{env}, a repo named like such a folder
+// (traefik, a backup dir, ...) would otherwise get to write into it. Matched
+// against the repo name and its slug (what {repo} resolves to).
 type BindRule struct {
-	Path     string   `yaml:"path"`
-	Create   bool     `yaml:"create"`
-	ReadOnly bool     `yaml:"read_only"`
-	Repos    []string `yaml:"repos"`
-	Services []string `yaml:"services"`
+	Path        string   `yaml:"path"`
+	Create      bool     `yaml:"create"`
+	ReadOnly    bool     `yaml:"read_only"`
+	Repos       []string `yaml:"repos"`
+	ExceptRepos []string `yaml:"except_repos"`
+	Services    []string `yaml:"services"`
 }
 
 // Bind is one bind mount of a rendered stack that passed the rules.
@@ -72,6 +80,9 @@ func (r BindRule) Prefix() string {
 
 func (r BindRule) appliesTo(repo, service string) bool {
 	if len(r.Repos) != 0 && !contains(r.Repos, repo) {
+		return false
+	}
+	if contains(r.ExceptRepos, repo) || contains(r.ExceptRepos, spec.Slug(repo)) {
 		return false
 	}
 	if len(r.Services) != 0 && !contains(r.Services, service) {

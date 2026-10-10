@@ -21,6 +21,8 @@ external_networks:
 bind_mounts:
   - path: /srv/swarm/{repo}/{env}
     create: true
+    # except_repos: [traefik]        # repos named like a folder under /srv/swarm
+    #                                # that belongs to something else
   # - path: /srv/shared/certs        # shared, read-only for everybody
   #   read_only: true
   # - path: /mnt/nas/einsatz         # only for one repository
