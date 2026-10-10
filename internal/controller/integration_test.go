@@ -147,6 +147,9 @@ func (f *fakeGit) Blob(_ string, sha string) ([]byte, error) {
 
 func (f *fakeGit) BranchProtected(string, string) (bool, error) { return f.protected, nil }
 
+// CommitCheckRuns reports no CI; the tests run with CI_WAIT_TIMEOUT=0 anyway.
+func (f *fakeGit) CommitCheckRuns(string, string) ([]gh.CheckRunStatus, error) { return nil, nil }
+
 func (f *fakeGit) CreateCheckRun(repo, sha, name string) (*gh.CheckRun, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

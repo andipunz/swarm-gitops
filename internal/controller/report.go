@@ -23,6 +23,7 @@ type run struct {
 	check    *gh.CheckRun
 	depID    int64
 	finished bool
+	note     string // shown under the header, e.g. that CI was still running
 }
 
 func newRun(c *Controller, t Target, log *slog.Logger) *run {
@@ -44,8 +45,12 @@ func newRun(c *Controller, t Target, log *slog.Logger) *run {
 }
 
 func (r *run) header() string {
-	return fmt.Sprintf("**Stack** `%s` · **Environment** `%s` · **Branch** `%s` · **Commit** `%s`\n\n",
+	h := fmt.Sprintf("**Stack** `%s` · **Environment** `%s` · **Branch** `%s` · **Commit** `%s`\n\n",
 		r.t.Stack, r.t.GitHubEnv, r.t.Branch.Name, short(r.t.Branch.Commit))
+	if r.note != "" {
+		h += "> " + r.note + "\n\n"
+	}
+	return h
 }
 
 func (r *run) startDeployment(redeploy bool) {

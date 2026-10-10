@@ -31,6 +31,7 @@ Each scan:
 4. **Policy**: checks the rendered stack (no bind mounts, no foreign images,
    no published ports, secrets never from git, …).
 5. **Deploy**: only if the rendered stack changed (or on an empty commit),
+   and only once the commit's own CI has finished (see [Waiting for CI](#waiting-for-ci)),
    then wait for the rollout and report back.
 6. **Remove**: stacks whose source is *provably* gone. See [Removal](#removal-safety).
 
@@ -127,6 +128,26 @@ by digest (`app:1.4.2@sha256:…`); pinned images are never touched.
 
 Use `update_config.failure_action: rollback`, so a broken image rolls back
 automatically and is reported as failed.
+
+### Waiting for CI
+
+A commit is deployed only once its own CI has finished: every check run on it
+except swarm-gitops' own (the workflow building the image, tests, the
+swarm-check, …) has to be completed. Otherwise a commit that changes `.swarm/`
+together with the code would be rolled out with the *previous* commit's image
+under the same tag (`:develop`, `:main`), because its own image isn't built
+yet - and fail as soon as the new configuration needs the new code (a new
+health endpoint, a new setting).
+
+- The `swarm / <env>` check run appears once the waiting is over.
+- A commit without any check runs is deployed one scan later (time for
+  GitHub to create them).
+- CI that finished unsuccessfully doesn't block the deploy; the check run
+  says which checks failed.
+- After `CI_WAIT_TIMEOUT` (default 30 minutes) the commit is deployed
+  anyway, with a note in the check run. `CI_WAIT_TIMEOUT=0` turns waiting off.
+- GitHub App auth only: under token auth the Checks API isn't available, so
+  commits deploy right away as before.
 
 ### Bind mounts
 
@@ -438,6 +459,7 @@ The plugin should only hand out secrets under a path matching repo + env
 | `SCAN_INTERVAL` | `1m` | |
 | `IMAGE_INTERVAL` | `2m` | `0` disables automatic image updates |
 | `ROLLOUT_TIMEOUT` | `5m` | |
+| `CI_WAIT_TIMEOUT` | `30m` | how long a commit waits for its CI before it is deployed anyway; `0` disables waiting (see [Waiting for CI](#waiting-for-ci)) |
 | `PRUNE_ENABLED` | `true` | `false` = only log what would be removed |
 | `PRUNE_CONFIRMATIONS` | `2` | consecutive scans before a removal |
 | `MAX_PRUNE` | `3` | more removals in one scan need `approve-prune` |

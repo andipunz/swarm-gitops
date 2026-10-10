@@ -23,6 +23,7 @@ services:
       SCAN_INTERVAL: 1m
       IMAGE_INTERVAL: 2m                          # 0 disables automatic image updates
       ROLLOUT_TIMEOUT: 5m
+      CI_WAIT_TIMEOUT: 30m                        # wait for the commit's CI before deploying; 0 disables
       PRUNE_ENABLED: "true"
       PRUNE_CONFIRMATIONS: "2"
       MAX_PRUNE: "3"

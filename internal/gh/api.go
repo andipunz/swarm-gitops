@@ -317,6 +317,45 @@ func (c *Client) CreateCheckRun(repo, sha, name string) (*CheckRun, error) {
 	return &cr, err
 }
 
+// CheckRunStatus is one check run on a commit, as far as waiting for CI needs it.
+type CheckRunStatus struct {
+	Name       string
+	Status     string // queued, in_progress, completed, ...
+	Conclusion string // set once completed: success, failure, neutral, skipped, ...
+	AppID      int64  // the GitHub App that owns the run
+}
+
+// CommitCheckRuns lists every check run on a commit, from all apps.
+func (c *Client) CommitCheckRuns(repo, sha string) ([]CheckRunStatus, error) {
+	var res []CheckRunStatus
+	for page := 1; ; page++ {
+		var out struct {
+			TotalCount int `json:"total_count"`
+			CheckRuns  []struct {
+				Name       string `json:"name"`
+				Status     string `json:"status"`
+				Conclusion string `json:"conclusion"`
+				App        *struct {
+					ID int64 `json:"id"`
+				} `json:"app"`
+			} `json:"check_runs"`
+		}
+		if err := c.do("GET", fmt.Sprintf("/repos/%s/%s/commits/%s/check-runs?filter=latest&per_page=100&page=%d", c.Org, repo, sha, page), nil, &out); err != nil {
+			return nil, err
+		}
+		for _, cr := range out.CheckRuns {
+			s := CheckRunStatus{Name: cr.Name, Status: cr.Status, Conclusion: cr.Conclusion}
+			if cr.App != nil {
+				s.AppID = cr.App.ID
+			}
+			res = append(res, s)
+		}
+		if len(out.CheckRuns) < 100 || len(res) >= out.TotalCount {
+			return res, nil
+		}
+	}
+}
+
 // CompleteCheckRun finishes a check run. Conclusion: success, failure, neutral, skipped.
 func (c *Client) CompleteCheckRun(repo string, id int64, conclusion, title, summary, text string) error {
 	return c.do("PATCH", fmt.Sprintf("/repos/%s/%s/check-runs/%d", c.Org, repo, id), map[string]any{

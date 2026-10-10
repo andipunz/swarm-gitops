@@ -19,14 +19,20 @@ import (
 type stubGit struct {
 	checkRunCreated   bool
 	checkRunCompleted bool
+	runs              []gh.CheckRunStatus // returned by CommitCheckRuns
+	runsErr           error
 }
 
-func (s *stubGit) ListRepos() ([]gh.Repo, error)                      { return nil, nil }
-func (s *stubGit) Branches(string) ([]gh.Branch, error)               { return nil, nil }
-func (s *stubGit) EnvProperties(string) (map[string][]string, error)  { return nil, nil }
-func (s *stubGit) Tree(string, string) ([]gh.TreeEntry, error)        { return nil, nil }
-func (s *stubGit) Blob(string, string) ([]byte, error)                { return nil, nil }
-func (s *stubGit) BranchProtected(string, string) (bool, error)       { return true, nil }
+func (s *stubGit) CommitCheckRuns(string, string) ([]gh.CheckRunStatus, error) {
+	return s.runs, s.runsErr
+}
+
+func (s *stubGit) ListRepos() ([]gh.Repo, error)                        { return nil, nil }
+func (s *stubGit) Branches(string) ([]gh.Branch, error)                 { return nil, nil }
+func (s *stubGit) EnvProperties(string) (map[string][]string, error)    { return nil, nil }
+func (s *stubGit) Tree(string, string) ([]gh.TreeEntry, error)          { return nil, nil }
+func (s *stubGit) Blob(string, string) ([]byte, error)                  { return nil, nil }
+func (s *stubGit) BranchProtected(string, string) (bool, error)         { return true, nil }
 func (s *stubGit) MarkEnvironmentInactive(string, string, string) error { return nil }
 
 func (s *stubGit) CreateCheckRun(repo, sha, name string) (*gh.CheckRun, error) {

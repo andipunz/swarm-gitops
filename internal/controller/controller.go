@@ -32,6 +32,7 @@ type Git interface {
 	Tree(repo, sha string) ([]gh.TreeEntry, error)
 	Blob(repo, sha string) ([]byte, error)
 	BranchProtected(repo, branch string) (bool, error)
+	CommitCheckRuns(repo, sha string) ([]gh.CheckRunStatus, error)
 	CreateCheckRun(repo, sha, name string) (*gh.CheckRun, error)
 	CompleteCheckRun(repo string, id int64, conclusion, title, summary, text string) error
 	CreateDeployment(repo, sha, env, description string, production, transient bool) (int64, error)
@@ -58,6 +59,7 @@ type Controller struct {
 	trees    map[string][]gh.TreeEntry // immutable, keyed by tree oid
 	blobs    map[string][]byte         // immutable, keyed by blob sha
 	attempts map[string]int            // stack@commit -> failed infrastructure attempts
+	ciSince  map[string]time.Time      // stack@commit -> first seen while waiting for its CI
 }
 
 // New creates a controller.
@@ -66,6 +68,7 @@ func New(cfg *config.Config, git Git, docker *swarm.Docker, reg *registry.Resolv
 		cfg: cfg, git: git, docker: docker, reg: reg, pol: pol, st: st, log: log,
 		trigger: make(chan struct{}, 1),
 		trees:   map[string][]gh.TreeEntry{}, blobs: map[string][]byte{}, attempts: map[string]int{},
+		ciSince: map[string]time.Time{},
 	}
 }
 
@@ -292,9 +295,18 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 	}
 	redeploy := force || t.Branch.EmptyCommit()
 	log := c.log.With("stack", t.Stack, "repo", t.Repo, "env", t.Env, "branch", t.Branch.Name, "commit", short(commit))
+
+	// Deploying while the commit's own CI still runs would roll out the new
+	// configuration with the image of the previous commit. Check again on the
+	// next scan instead.
+	wait, ciNote := c.waitForCI(t, log)
+	if wait {
+		return
+	}
 	log.Info("processing", "redeploy", redeploy)
 
 	r := newRun(c, t, log)
+	r.note = ciNote
 	defer r.cleanup()
 
 	// A stack with this name that we don't manage must never be overwritten.

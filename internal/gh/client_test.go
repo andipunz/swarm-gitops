@@ -136,6 +136,37 @@ func TestTokenAuth(t *testing.T) {
 	}
 }
 
+func TestCommitCheckRunsPaginates(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/bw/app/commits/c1/check-runs" || r.URL.Query().Get("filter") != "latest" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		var runs []map[string]any
+		switch r.URL.Query().Get("page") {
+		case "1":
+			for i := 0; i < 100; i++ {
+				runs = append(runs, map[string]any{"name": "test", "status": "completed", "conclusion": "success", "app": map[string]any{"id": 15368}})
+			}
+		case "2":
+			runs = append(runs, map[string]any{"name": "build", "status": "in_progress", "conclusion": nil, "app": map[string]any{"id": 15368}})
+		}
+		json.NewEncoder(w).Encode(map[string]any{"total_count": 101, "check_runs": runs})
+	}))
+	defer srv.Close()
+
+	runs, err := NewWithToken("bw", srv.URL, "tok").CommitCheckRuns("app", "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 101 {
+		t.Fatalf("got %d runs, want 101 across both pages", len(runs))
+	}
+	if last := runs[100]; last.Name != "build" || last.Status != "in_progress" || last.Conclusion != "" || last.AppID != 15368 {
+		t.Fatalf("last run = %+v", last)
+	}
+}
+
 func TestBranchProtected(t *testing.T) {
 	key, _ := rsa.GenerateKey(rand.Reader, 2048)
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})

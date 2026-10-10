@@ -24,17 +24,21 @@ type Config struct {
 	ScanInterval     time.Duration // SCAN_INTERVAL
 	ImageInterval    time.Duration // IMAGE_INTERVAL (0 disables automatic image updates)
 	RolloutTimeout   time.Duration // ROLLOUT_TIMEOUT
-	PruneEnabled     bool          // PRUNE_ENABLED
-	PruneConfirm     int           // PRUNE_CONFIRMATIONS: consecutive scans before a stack is removed
-	MaxPrune         int           // MAX_PRUNE: more removals than this in one scan need approval
-	Concurrency      int           // CONCURRENCY
-	DataDir          string        // DATA_DIR
-	PolicyFile       string        // POLICY_FILE
-	Socket           string        // SOCKET
-	DockerConfig     string        // DOCKER_CONFIG (dir with config.json for registry auth)
-	DryRun           bool          // DRY_RUN: render, check and report, but never touch the Swarm
-	PrepImage        string        // PREP_IMAGE: image running `swarm-gitops prepare` on the nodes
-	PrepTimeout      time.Duration // PREP_TIMEOUT
+	// CIWait is how long a commit waits for its own CI (check runs other than
+	// swarm-gitops') to finish before it is deployed anyway; 0 deploys
+	// immediately. GitHub App auth only.
+	CIWait       time.Duration // CI_WAIT_TIMEOUT
+	PruneEnabled bool          // PRUNE_ENABLED
+	PruneConfirm int           // PRUNE_CONFIRMATIONS: consecutive scans before a stack is removed
+	MaxPrune     int           // MAX_PRUNE: more removals than this in one scan need approval
+	Concurrency  int           // CONCURRENCY
+	DataDir      string        // DATA_DIR
+	PolicyFile   string        // POLICY_FILE
+	Socket       string        // SOCKET
+	DockerConfig string        // DOCKER_CONFIG (dir with config.json for registry auth)
+	DryRun       bool          // DRY_RUN: render, check and report, but never touch the Swarm
+	PrepImage    string        // PREP_IMAGE: image running `swarm-gitops prepare` on the nodes
+	PrepTimeout  time.Duration // PREP_TIMEOUT
 	// MetricsAddr, e.g. ":9090", starts a read-only Prometheus endpoint on
 	// its own listener. Empty (default) disables it. Unlike SOCKET, this is
 	// meant to be network-reachable - keep it off the public internet (no
@@ -75,6 +79,7 @@ func FromEnv() (*Config, error) {
 		{&c.ScanInterval, "SCAN_INTERVAL", "1m", false},
 		{&c.ImageInterval, "IMAGE_INTERVAL", "2m", true},
 		{&c.RolloutTimeout, "ROLLOUT_TIMEOUT", "5m", false},
+		{&c.CIWait, "CI_WAIT_TIMEOUT", "30m", true},
 		{&c.PrepTimeout, "PREP_TIMEOUT", "2m", false},
 	}
 	for _, d := range durations {
