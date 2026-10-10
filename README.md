@@ -515,7 +515,9 @@ On top of that:
 - **Metrics:** set `METRICS_ADDR` (e.g. `:9090`) to expose a read-only
   Prometheus endpoint on its own listener — deliberately separate from the
   admin API, which stays Unix-socket-only. It reports per-service desired/
-  running replica counts and the controller's own scan health (last scan
+  running replica counts, where each stack was deployed from
+  (`swarm_gitops_stack_info`: repo, env, branch, commit) and the
+  controller's own scan health (last scan
   time/error, orphaned stacks, prune-blocked stacks); nothing about node or
   container resource usage, which belongs to your metrics stack, not this
   controller. Keep it off the public internet — no Traefik router, an

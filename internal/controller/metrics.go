@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/andipunz/swarm-gitops/internal/render"
 	"github.com/andipunz/swarm-gitops/internal/state"
 )
 
@@ -14,9 +15,15 @@ type StackReplicas struct {
 	Running        int
 }
 
+// StackSource is where a managed stack was deployed from, for the /metrics endpoint.
+type StackSource struct {
+	Stack, Repo, Env, Branch, Commit string
+}
+
 // MetricsSnapshot is the point-in-time data exposed at /metrics.
 type MetricsSnapshot struct {
 	Stacks         []StackReplicas
+	Sources        []StackSource
 	LastScan       time.Time
 	LastScanError  bool
 	LastImageCheck time.Time
@@ -35,6 +42,10 @@ func (c *Controller) Metrics(ctx context.Context) (*MetricsSnapshot, error) {
 	}
 	m := &MetricsSnapshot{}
 	for _, stack := range sortedKeys(stacks) {
+		// Every service of a stack carries the same source labels (render.go).
+		s := stacks[stack][0]
+		m.Sources = append(m.Sources, StackSource{Stack: stack, Repo: s.Label(render.LabelRepo), Env: s.Label(render.LabelEnv),
+			Branch: s.Label(render.LabelRef), Commit: s.Label(render.LabelCommit)})
 		counts, err := c.docker.ReplicaCounts(ctx, stack)
 		if err != nil {
 			return nil, err
