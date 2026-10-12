@@ -60,6 +60,7 @@ type Controller struct {
 	blobs    map[string][]byte         // immutable, keyed by blob sha
 	attempts map[string]int            // stack@commit -> failed infrastructure attempts
 	ciSince  map[string]time.Time      // stack@commit -> first seen while waiting for its CI
+	restored map[string]string         // stack -> commit already redeployed once because its stack was missing
 }
 
 // New creates a controller.
@@ -68,7 +69,7 @@ func New(cfg *config.Config, git Git, docker *swarm.Docker, reg *registry.Resolv
 		cfg: cfg, git: git, docker: docker, reg: reg, pol: pol, st: st, log: log,
 		trigger: make(chan struct{}, 1),
 		trees:   map[string][]gh.TreeEntry{}, blobs: map[string][]byte{}, attempts: map[string]int{},
-		ciSince: map[string]time.Time{},
+		ciSince: map[string]time.Time{}, restored: map[string]string{},
 	}
 }
 
@@ -290,11 +291,25 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 		paused, force, processed = d.Paused[t.Stack], d.Force[t.Stack], d.Processed[t.Stack]
 	})
 	commit := t.Branch.Commit
-	if paused || (processed == commit && !force) {
+	log := c.log.With("stack", t.Stack, "repo", t.Repo, "env", t.Env, "branch", t.Branch.Name, "commit", short(commit))
+	c.cacheMu.Lock()
+	restoredBefore := c.restored[t.Stack] == commit
+	c.cacheMu.Unlock()
+	proceed, missing := deployDecision(paused, force, processed, commit, t.Running, restoredBefore)
+	if !proceed {
 		return
 	}
+	var missingNote string
+	if missing {
+		// Once per commit: if this deploy fails too (a hostname taken, say),
+		// trying again every scan would only spam check runs.
+		c.cacheMu.Lock()
+		c.restored[t.Stack] = commit
+		c.cacheMu.Unlock()
+		log.Warn("stack was removed outside swarm-gitops, deploying it again")
+		missingNote = "The stack had been removed from the Swarm outside swarm-gitops (e.g. `docker stack rm`) and was deployed again."
+	}
 	redeploy := force || t.Branch.EmptyCommit()
-	log := c.log.With("stack", t.Stack, "repo", t.Repo, "env", t.Env, "branch", t.Branch.Name, "commit", short(commit))
 
 	// Deploying while the commit's own CI still runs would roll out the new
 	// configuration with the image of the previous commit. Check again on the
@@ -306,7 +321,7 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 	log.Info("processing", "redeploy", redeploy)
 
 	r := newRun(c, t, log)
-	r.note = ciNote
+	r.note = strings.TrimSpace(missingNote + " " + ciNote)
 	defer r.cleanup()
 
 	// A stack with this name that we don't manage must never be overwritten.
@@ -430,6 +445,24 @@ func (c *Controller) processTarget(ctx context.Context, t Target) {
 		r.done("failure", "Rollout failed", summary, text)
 	}
 	c.cleanWorkdirs(t.Stack, commit)
+}
+
+// deployDecision says whether a target is processed this scan, and whether
+// that is because its already deployed commit's stack went missing. A stack
+// removed outside swarm-gitops would otherwise stay gone until the next
+// commit, since a commit is only deployed once. That redeploy happens once per
+// commit (restoredBefore): if it fails, the next commit or `redeploy` retries.
+func deployDecision(paused, force bool, processed, commit string, running, restoredBefore bool) (proceed, missing bool) {
+	switch {
+	case paused:
+		return false, false
+	case processed != commit || force:
+		return true, false
+	case !running && !restoredBefore:
+		return true, true
+	default:
+		return false, false
+	}
 }
 
 // claims describes what is already taken on the live Swarm, by any service

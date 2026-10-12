@@ -119,6 +119,11 @@ An empty commit (same content as its parent) forces a rolling restart of the
 stack, even if nothing changed. Normal commits that don't change the rendered
 stack (README edits, code outside `.swarm/`) don't restart anything.
 
+A stack removed outside swarm-gitops (`docker stack rm`, or another tool
+deleting a stack of the same name) is deployed again on the next scan, once
+per commit; the check run says so. To take a stack down on purpose, `pause`
+it first (see [CLI](#7-cli)) or remove its environment from `deploy.yml`.
+
 ### New images
 
 If `stack.yml` uses a tag (`ghcr.io/example/app:main`), a new image

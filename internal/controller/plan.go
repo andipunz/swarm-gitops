@@ -18,6 +18,11 @@ type Target struct {
 	GitHubEnv string
 	Files     []string        // compose files, relative to .swarm/
 	Optional  map[string]bool // files that may be missing
+	// Running: a managed stack of this name was on the Swarm when the scan
+	// started. A target whose commit was already deployed but isn't running
+	// was removed outside swarm-gitops (docker stack rm, another tool) and
+	// is deployed again - see deployDecision.
+	Running bool
 }
 
 // StackInfo describes a stack currently running on the Swarm.
@@ -118,6 +123,7 @@ func MakePlan(in PlanInput) *Plan {
 					keepStack[t.Stack] = true
 					continue
 				}
+				_, t.Running = in.Current[t.Stack]
 				desired[t.Stack] = t
 				p.Targets = append(p.Targets, t)
 			}

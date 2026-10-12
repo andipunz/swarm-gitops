@@ -150,3 +150,37 @@ func TestEmptyCommit(t *testing.T) {
 		t.Fatal("merge/root commit must not count as empty")
 	}
 }
+
+func TestPlanMarksRunningStacks(t *testing.T) {
+	in := baseInput()
+	in.Current["app-prod"] = StackInfo{Repo: "app", Env: "prod"}
+	for _, tg := range MakePlan(in).Targets {
+		if want := tg.Stack == "app-prod"; tg.Running != want {
+			t.Errorf("%s: Running = %v, want %v", tg.Stack, tg.Running, want)
+		}
+	}
+}
+
+func TestDeployDecision(t *testing.T) {
+	cases := []struct {
+		name                     string
+		paused, force            bool
+		processed                string
+		running, restoredBefore  bool
+		wantProceed, wantMissing bool
+	}{
+		{"new commit", false, false, "old", true, false, true, false},
+		{"already deployed, running", false, false, "c1", true, false, false, false},
+		{"already deployed, stack removed", false, false, "c1", false, false, true, true},
+		{"stack removed, already redeployed once", false, false, "c1", false, true, false, false},
+		{"forced redeploy", false, true, "c1", true, false, true, false},
+		{"paused, stack removed", true, false, "c1", false, false, false, false},
+		{"never deployed, not running", false, false, "", false, false, true, false},
+	}
+	for _, tc := range cases {
+		proceed, missing := deployDecision(tc.paused, tc.force, tc.processed, "c1", tc.running, tc.restoredBefore)
+		if proceed != tc.wantProceed || missing != tc.wantMissing {
+			t.Errorf("%s: got proceed=%v missing=%v, want %v/%v", tc.name, proceed, missing, tc.wantProceed, tc.wantMissing)
+		}
+	}
+}
