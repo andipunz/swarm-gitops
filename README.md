@@ -543,10 +543,7 @@ On top of that:
 
 ## Development
 
-Open the repo in the provided [dev container](.devcontainer/devcontainer.json)
-(VS Code "Reopen in Container", or GitHub Codespaces) for Go, the Docker CLI
-and a one-node Swarm ready to go — skip straight to `go test ./...` below.
-Setting it up by hand needs Go 1.24+ and Docker with Swarm mode.
+Needs Go 1.24+ and Docker with Swarm mode.
 
 ```sh
 go test ./...                                   # unit tests (render tests need the docker CLI)
