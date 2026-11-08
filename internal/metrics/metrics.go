@@ -60,6 +60,12 @@ func write(w http.ResponseWriter, m *controller.MetricsSnapshot) {
 		fmt.Fprintf(w, "swarm_gitops_stack_info{stack=\"%s\",repo=\"%s\",env=\"%s\",branch=\"%s\",commit=\"%s\"} 1\n",
 			esc(s.Stack), esc(s.Repo), esc(s.Env), esc(s.Branch), esc(s.Commit))
 	}
+	fmt.Fprintln(w, "# HELP swarm_gitops_service_image_info The image a service runs and, from its OCI labels, the commit it was built from (always 1).")
+	fmt.Fprintln(w, "# TYPE swarm_gitops_service_image_info gauge")
+	for _, s := range m.Images {
+		fmt.Fprintf(w, "swarm_gitops_service_image_info{stack=\"%s\",service=\"%s\",image=\"%s\",revision=\"%s\",source=\"%s\",version=\"%s\"} 1\n",
+			esc(s.Stack), esc(s.Service), esc(s.Image), esc(s.Revision), esc(s.Source), esc(s.Version))
+	}
 	fmt.Fprintln(w, "# HELP swarm_gitops_last_scan_timestamp_seconds Unix time the last scan completed.")
 	fmt.Fprintln(w, "# TYPE swarm_gitops_last_scan_timestamp_seconds gauge")
 	fmt.Fprintf(w, "swarm_gitops_last_scan_timestamp_seconds %d\n", m.LastScan.Unix())

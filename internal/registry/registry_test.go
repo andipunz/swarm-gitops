@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParse(t *testing.T) {
@@ -76,5 +77,68 @@ func TestDigestWithTokenAuth(t *testing.T) {
 	}
 	if _, err := r.Digest(Parse(host + "/org/missing:main")); err == nil {
 		t.Fatal("expected error for missing image")
+	}
+}
+
+// Fake registry: index -> linux/amd64 manifest -> config blob, behind the
+// same token auth. Labels returns nothing until the background lookup is done.
+func TestLabels(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			fmt.Fprint(w, `{"token":"tok"}`)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			w.Header().Set("WWW-Authenticate", fmt.Sprintf(`Bearer realm="%s/token",service="reg"`, srv.URL))
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		switch r.URL.Path {
+		case "/v2/org/app/manifests/sha256:index":
+			fmt.Fprint(w, `{"manifests":[
+				{"digest":"sha256:arm","platform":{"os":"linux","architecture":"arm64"}},
+				{"digest":"sha256:amd","platform":{"os":"linux","architecture":"amd64"}}]}`)
+		case "/v2/org/app/manifests/sha256:amd":
+			fmt.Fprint(w, `{"config":{"digest":"sha256:cfg"}}`)
+		case "/v2/org/app/blobs/sha256:cfg":
+			fmt.Fprint(w, `{"config":{"Labels":{"org.opencontainers.image.revision":"8db45e6"}}}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	host := strings.TrimPrefix(srv.URL, "https://")
+
+	r := NewResolver("")
+	r.http = srv.Client()
+	wait := func(image string) (map[string]string, bool) {
+		ref := Parse(image)
+		if _, ok := r.Labels(ref); ok {
+			t.Fatalf("%s: first call must not block", image)
+		}
+		for i := 0; i < 200; i++ {
+			r.mu.Lock()
+			l := r.labels[ref.Digest]
+			r.mu.Unlock()
+			if l != nil {
+				return r.Labels(ref)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("%s: lookup never finished", image)
+		return nil, false
+	}
+
+	l, ok := wait(host + "/org/app:develop@sha256:index")
+	if !ok || l["org.opencontainers.image.revision"] != "8db45e6" {
+		t.Fatalf("labels = %v %v", l, ok)
+	}
+	// A failed lookup is cached as "no labels", not retried.
+	if l, ok := wait(host + "/org/app@sha256:missing"); !ok || len(l) != 0 {
+		t.Fatalf("missing: %v %v", l, ok)
+	}
+	if _, ok := r.Labels(Parse(host + "/org/app:develop")); ok {
+		t.Fatal("no digest: want ok=false")
 	}
 }

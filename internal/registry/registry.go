@@ -1,5 +1,5 @@
-// Package registry resolves image tags to digests via the Registry v2 API,
-// using credentials from a docker config.json (the same file used for
+// Package registry resolves image tags to digests, and digests to their
+// image labels, via the Registry v2 API, using credentials from a docker config.json (the same file used for
 // --with-registry-auth). Stdlib only.
 package registry
 
@@ -62,12 +62,13 @@ type Resolver struct {
 	ConfigFile string // docker config.json path; empty = anonymous only
 	http       *http.Client
 	mu         sync.Mutex
-	tokens     map[string]string // realm+scope -> bearer token
+	tokens     map[string]string            // realm+scope -> bearer token
+	labels     map[string]map[string]string // digest -> image labels (nil = lookup in flight)
 }
 
 // NewResolver creates a resolver.
 func NewResolver(configFile string) *Resolver {
-	return &Resolver{ConfigFile: configFile, http: &http.Client{Timeout: 20 * time.Second}, tokens: map[string]string{}}
+	return &Resolver{ConfigFile: configFile, http: &http.Client{Timeout: 20 * time.Second}, tokens: map[string]string{}, labels: map[string]map[string]string{}}
 }
 
 var manifestTypes = strings.Join([]string{
@@ -112,21 +113,130 @@ func (r *Resolver) Digest(ref Ref) (string, error) {
 	return d, nil
 }
 
-func (r *Resolver) head(url, auth string) (*http.Response, error) {
-	req, err := http.NewRequest("HEAD", url, nil)
-	if err != nil {
+// Labels returns the labels of the image ref's digest points to (for an
+// index: its linux/amd64 image, else the first one), e.g.
+// org.opencontainers.image.revision. It never blocks: on a cache miss it
+// starts the lookup in the background and returns ok=false. A digest's
+// content never changes, so results - failures included (as empty labels) -
+// are cached for good: this runs on every metrics scrape, and Docker Hub
+// counts manifest GETs against its pull limit.
+func (r *Resolver) Labels(ref Ref) (labels map[string]string, ok bool) {
+	if ref.Digest == "" {
+		return nil, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if l, done := r.labels[ref.Digest]; done {
+		return l, l != nil
+	}
+	r.labels[ref.Digest] = nil // in flight
+	go func() {
+		l, err := r.fetchLabels(ref)
+		if err != nil || l == nil {
+			l = map[string]string{}
+		}
+		r.mu.Lock()
+		r.labels[ref.Digest] = l
+		r.mu.Unlock()
+	}()
+	return nil, false
+}
+
+func (r *Resolver) fetchLabels(ref Ref) (map[string]string, error) {
+	var m struct {
+		Manifests []struct {
+			Digest   string `json:"digest"`
+			Platform struct {
+				OS           string `json:"os"`
+				Architecture string `json:"architecture"`
+			} `json:"platform"`
+		} `json:"manifests"`
+		Config struct {
+			Digest string `json:"digest"`
+		} `json:"config"`
+	}
+	if err := r.getJSON(ref, "manifests/"+ref.Digest, manifestTypes, &m); err != nil {
 		return nil, err
 	}
-	req.Header.Set("Accept", manifestTypes)
-	if auth != "" {
-		req.Header.Set("Authorization", auth)
+	if len(m.Manifests) > 0 { // an index: pick one image of it
+		pick := m.Manifests[0].Digest
+		for _, e := range m.Manifests {
+			if e.Platform.OS == "linux" && e.Platform.Architecture == "amd64" {
+				pick = e.Digest
+				break
+			}
+		}
+		if err := r.getJSON(ref, "manifests/"+pick, manifestTypes, &m); err != nil {
+			return nil, err
+		}
 	}
-	resp, err := r.http.Do(req)
+	if m.Config.Digest == "" {
+		return nil, errors.New("manifest has no config")
+	}
+	var cfg struct {
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"config"`
+	}
+	if err := r.getJSON(ref, "blobs/"+m.Config.Digest, "*/*", &cfg); err != nil {
+		return nil, err
+	}
+	if cfg.Config.Labels == nil {
+		return map[string]string{}, nil
+	}
+	return cfg.Config.Labels, nil
+}
+
+// getJSON GETs /v2/<repo>/<path> and decodes it, doing the token dance if
+// needed (blobs usually redirect to storage; the client follows).
+func (r *Resolver) getJSON(ref Ref, path, accept string, out any) error {
+	host := ref.Host
+	if host == "docker.io" {
+		host = "registry-1.docker.io"
+	}
+	url := fmt.Sprintf("https://%s/v2/%s/%s", host, ref.Repo, path)
+	scope := "repository:" + ref.Repo + ":pull"
+	resp, err := r.do("GET", url, accept, r.cachedToken(host, scope))
+	if err != nil {
+		return err
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		resp.Body.Close()
+		tok, err := r.token(ref.Host, resp.Header.Get("WWW-Authenticate"), scope)
+		if err != nil {
+			return err
+		}
+		if resp, err = r.do("GET", url, accept, "Bearer "+tok); err != nil {
+			return err
+		}
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("GET %s: %s", url, resp.Status)
+	}
+	return json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(out)
+}
+
+func (r *Resolver) head(url, auth string) (*http.Response, error) {
+	resp, err := r.do("HEAD", url, manifestTypes, auth)
 	if err != nil {
 		return nil, err
 	}
 	resp.Body.Close()
 	return resp, nil
+}
+
+// do sends a request; the caller closes the body.
+func (r *Resolver) do(method, url, accept, auth string) (*http.Response, error) {
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", accept)
+	if auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	return r.http.Do(req)
 }
 
 func (r *Resolver) cachedToken(host, scope string) string {

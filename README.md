@@ -521,8 +521,13 @@ On top of that:
   Prometheus endpoint on its own listener — deliberately separate from the
   admin API, which stays Unix-socket-only. It reports per-service desired/
   running replica counts, where each stack was deployed from
-  (`swarm_gitops_stack_info`: repo, env, branch, commit) and the
-  controller's own scan health (last scan
+  (`swarm_gitops_stack_info`: repo, env, branch, commit - the commit of the
+  last `.swarm/` deploy, which new images of the same tag don't change),
+  the image each service runs and the commit it was built from
+  (`swarm_gitops_service_image_info`: image with digest, and the image's
+  `org.opencontainers.image.revision`/`source`/`version` labels, read from
+  the registry once per digest in the background, so a new digest gets
+  them from the next scrape on) and the controller's own scan health (last scan
   time/error, orphaned stacks, prune-blocked stacks); nothing about node or
   container resource usage, which belongs to your metrics stack, not this
   controller. Keep it off the public internet — no Traefik router, an

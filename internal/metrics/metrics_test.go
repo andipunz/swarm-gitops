@@ -15,7 +15,9 @@ func TestWrite(t *testing.T) {
 			{Stack: "app-prod", Service: "app-prod_web", Desired: 3, Running: 2},
 			{Stack: "app-prod", Service: "app-prod_worker", Desired: -1, Running: 1}, // global service
 		},
-		Sources:        []controller.StackSource{{Stack: "app-prod", Repo: "app", Env: "prod", Branch: "main", Commit: "abc123"}},
+		Sources: []controller.StackSource{{Stack: "app-prod", Repo: "app", Env: "prod", Branch: "main", Commit: "abc123"}},
+		Images: []controller.ServiceImage{{Stack: "app-prod", Service: "app-prod_web", Image: "ghcr.io/org/app:main@sha256:feed",
+			Revision: "8db45e6", Source: "https://github.com/org/app", Version: "main"}},
 		LastScan:       time.Unix(1700000000, 0),
 		LastScanError:  true,
 		LastImageCheck: time.Unix(1700000100, 0),
@@ -31,6 +33,7 @@ func TestWrite(t *testing.T) {
 		`swarm_gitops_service_running_replicas{stack="app-prod",service="app-prod_web"} 2`,
 		`swarm_gitops_service_running_replicas{stack="app-prod",service="app-prod_worker"} 1`,
 		`swarm_gitops_stack_info{stack="app-prod",repo="app",env="prod",branch="main",commit="abc123"} 1`,
+		`swarm_gitops_service_image_info{stack="app-prod",service="app-prod_web",image="ghcr.io/org/app:main@sha256:feed",revision="8db45e6",source="https://github.com/org/app",version="main"} 1`,
 		"swarm_gitops_last_scan_timestamp_seconds 1700000000",
 		"swarm_gitops_last_scan_error 1",
 		"swarm_gitops_last_image_check_timestamp_seconds 1700000100",
