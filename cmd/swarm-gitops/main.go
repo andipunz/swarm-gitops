@@ -184,6 +184,7 @@ func status(socket string) error {
 		fmt.Printf("  ERROR: %s", st.LastScanError)
 	}
 	fmt.Printf("\nlast image check: %s\n", st.LastImageCheck.Format(time.RFC3339))
+	fmt.Printf("last secret check: %s\n", st.LastSecretCheck.Format(time.RFC3339))
 	if st.DryRun {
 		fmt.Println("DRY RUN: nothing is deployed or removed")
 	}

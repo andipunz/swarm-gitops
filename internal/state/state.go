@@ -23,6 +23,10 @@ type Data struct {
 	LastScan       time.Time         `json:"last_scan"`
 	LastScanError  string            `json:"last_scan_error"`
 	LastImageCheck time.Time         `json:"last_image_check"`
+	// SecretVersions: "stack|secret" -> version of a driver secret the
+	// stack's services last (re)started with.
+	SecretVersions  map[string]string `json:"secret_versions"`
+	LastSecretCheck time.Time         `json:"last_secret_check"`
 	// BindHistory: bind rule root -> sources that were ever mounted writable.
 	BindHistory map[string][]string `json:"bind_history"`
 }
@@ -67,6 +71,9 @@ func (s *Store) init() {
 	}
 	if s.d.BindHistory == nil {
 		s.d.BindHistory = map[string][]string{}
+	}
+	if s.d.SecretVersions == nil {
+		s.d.SecretVersions = map[string]string{}
 	}
 	if s.d.Orphaned == nil {
 		s.d.Orphaned = map[string]string{}

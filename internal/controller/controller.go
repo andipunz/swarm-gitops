@@ -61,6 +61,8 @@ type Controller struct {
 	attempts map[string]int            // stack@commit -> failed infrastructure attempts
 	ciSince  map[string]time.Time      // stack@commit -> first seen while waiting for its CI
 	restored map[string]string         // stack -> commit already redeployed once because its stack was missing
+
+	pendingSecrets map[string]pendingSecret // stack|secret -> changed version waiting for plugin caches (under cacheMu)
 }
 
 // New creates a controller.
@@ -70,14 +72,18 @@ func New(cfg *config.Config, git Git, docker *swarm.Docker, reg *registry.Resolv
 		trigger: make(chan struct{}, 1),
 		trees:   map[string][]gh.TreeEntry{}, blobs: map[string][]byte{}, attempts: map[string]int{},
 		ciSince: map[string]time.Time{}, restored: map[string]string{},
+		pendingSecrets: map[string]pendingSecret{},
 	}
 }
 
-// Run scans until ctx is cancelled. Image updates run in their own loop.
+// Run scans until ctx is cancelled. Image and secret updates run in their own loops.
 func (c *Controller) Run(ctx context.Context) {
 	c.docker.RemovePrepLeftovers(ctx)
 	if c.cfg.ImageInterval > 0 {
 		go c.imageLoop(ctx)
+	}
+	if c.cfg.SecretInterval > 0 {
+		go c.secretLoop(ctx)
 	}
 	for {
 		c.Scan(ctx)

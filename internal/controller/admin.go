@@ -24,13 +24,14 @@ type StackStatus struct {
 
 // Status is the admin overview.
 type Status struct {
-	LastScan       time.Time         `json:"last_scan"`
-	LastScanError  string            `json:"last_scan_error,omitempty"`
-	LastImageCheck time.Time         `json:"last_image_check"`
-	DryRun         bool              `json:"dry_run,omitempty"`
-	Stacks         []StackStatus     `json:"stacks"`
-	Orphaned       map[string]string `json:"orphaned,omitempty"`
-	PruneBlocked   []string          `json:"prune_blocked,omitempty"`
+	LastScan        time.Time         `json:"last_scan"`
+	LastScanError   string            `json:"last_scan_error,omitempty"`
+	LastImageCheck  time.Time         `json:"last_image_check"`
+	LastSecretCheck time.Time         `json:"last_secret_check"`
+	DryRun          bool              `json:"dry_run,omitempty"`
+	Stacks          []StackStatus     `json:"stacks"`
+	Orphaned        map[string]string `json:"orphaned,omitempty"`
+	PruneBlocked    []string          `json:"prune_blocked,omitempty"`
 }
 
 // Status collects the current state.
@@ -41,7 +42,7 @@ func (c *Controller) Status(ctx context.Context) (*Status, error) {
 	}
 	st := &Status{DryRun: c.cfg.DryRun}
 	c.st.View(func(d *state.Data) {
-		st.LastScan, st.LastScanError, st.LastImageCheck = d.LastScan, d.LastScanError, d.LastImageCheck
+		st.LastScan, st.LastScanError, st.LastImageCheck, st.LastSecretCheck = d.LastScan, d.LastScanError, d.LastImageCheck, d.LastSecretCheck
 		st.Orphaned, st.PruneBlocked = d.Orphaned, d.PruneBlocked
 		for name, svcs := range stacks {
 			s := svcs[0]

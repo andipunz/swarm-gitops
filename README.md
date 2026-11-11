@@ -36,7 +36,9 @@ Each scan:
 6. **Remove**: stacks whose source is *provably* gone. See [Removal](#removal-safety).
 
 In between, every 2 minutes, running services are checked for **new image
-digests** behind their tags (`:main`, `:latest`, …) and rolled when one appears.
+digests** behind their tags (`:main`, `:latest`, …) and rolled when one appears,
+and for **changed secrets** at a secret driver's source (e.g. 1Password), which
+restart the services using them.
 
 ---
 
@@ -248,6 +250,24 @@ secrets:
   db_password:
     driver: your-org/secrets
 ```
+
+#### Changed secrets restart the services using them
+
+Swarm asks a secret driver for the value only when a task starts, so running
+containers keep the old value after it changed at the source. Every 2 minutes
+(`SECRET_INTERVAL`) the controller asks each driver for the current version of
+the secrets managed stacks use and restarts (`service update --force`) the
+services whose secrets changed. It shows up as a deployment "Secret changed:
+db_password → restarted api" in the repo.
+
+- Only drivers that answer version requests take part, e.g.
+  [op-sa-secret-driver](https://github.com/andipunz/op-sa-secret-driver)
+  (1Password, from 0.2.0). Others are skipped.
+- After a change, the controller waits the driver's cache TTL before
+  restarting, so every manager hands out the new value.
+- Any edit of the 1Password item counts, even of a field the secret doesn't use.
+- Paused stacks are skipped; their changes are picked up after `resume`.
+- A secret seen for the first time (new stack or secret) is only recorded.
 
 ### Removal
 
@@ -463,6 +483,8 @@ The plugin should only hand out secrets under a path matching repo + env
 | `REQUIRE_PROTECTED` | `prod` | comma list of envs needing protected branches |
 | `SCAN_INTERVAL` | `1m` | |
 | `IMAGE_INTERVAL` | `2m` | `0` disables automatic image updates |
+| `SECRET_INTERVAL` | `2m` | `0` disables restarts on changed driver secrets (see [Secrets](#secrets)) |
+| `PLUGIN_DIR` | `/run/docker/plugins` | the host's plugin socket folder, mounted into the controller (`deploy/stack.yml`) |
 | `ROLLOUT_TIMEOUT` | `5m` | |
 | `CI_WAIT_TIMEOUT` | `30m` | how long a commit waits for its CI before it is deployed anyway; `0` disables waiting (see [Waiting for CI](#waiting-for-ci)) |
 | `PRUNE_ENABLED` | `true` | `false` = only log what would be removed |
