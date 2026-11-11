@@ -2,6 +2,7 @@ package gh
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/url"
 	"strings"
@@ -387,6 +388,43 @@ func (c *Client) DeploymentStatus(repo string, id int64, state, description, log
 		body["environment_url"] = envURL
 	}
 	return c.do("POST", fmt.Sprintf("/repos/%s/%s/deployments/%d/statuses", c.Org, repo, id), body, nil)
+}
+
+// RedeployTask is the deployment task that asks swarm-gitops for a redeploy.
+const RedeployTask = "redeploy"
+
+// DeploymentRequest is a deployment created by someone else (e.g. the
+// redeploy workflow) for swarm-gitops to carry out.
+type DeploymentRequest struct {
+	ID          int64     `json:"id"`
+	Sha         string    `json:"sha"`
+	Ref         string    `json:"ref"`
+	Environment string    `json:"environment"`
+	CreatedAt   time.Time `json:"created_at"`
+	Creator     struct {
+		Login string `json:"login"`
+	} `json:"creator"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+// RequestedBy is the user who asked for the deployment: payload.requested_by
+// (deployments created by a workflow token belong to github-actions[bot]),
+// else the deployment's creator.
+func (d DeploymentRequest) RequestedBy() string {
+	var p struct {
+		RequestedBy string `json:"requested_by"`
+	}
+	if json.Unmarshal(d.Payload, &p) == nil && p.RequestedBy != "" {
+		return p.RequestedBy
+	}
+	return d.Creator.Login
+}
+
+// RedeployRequests lists the latest deployments with task "redeploy", newest first.
+func (c *Client) RedeployRequests(repo string) ([]DeploymentRequest, error) {
+	var ds []DeploymentRequest
+	err := c.do("GET", fmt.Sprintf("/repos/%s/%s/deployments?task=%s&per_page=20", c.Org, repo, RedeployTask), nil, &ds)
+	return ds, err
 }
 
 // MarkEnvironmentInactive marks the latest deployment of an environment inactive.

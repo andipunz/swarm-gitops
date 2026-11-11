@@ -12,23 +12,36 @@ import (
 
 // Data is the persisted state.
 type Data struct {
-	Processed      map[string]string `json:"processed"`       // stack -> last handled commit
-	Paused         map[string]bool   `json:"paused"`          // stacks excluded from deploys/updates
-	Adopted        map[string]bool   `json:"adopted"`         // unmanaged stacks the controller may take over
-	Force          map[string]bool   `json:"force"`           // redeploy requested via CLI
-	PendingRemoval map[string]int    `json:"pending_removal"` // stack -> consecutive scans wanting removal
-	Orphaned       map[string]string `json:"orphaned"`        // stack -> reason it is kept
-	PruneBlocked   []string          `json:"prune_blocked"`   // removals waiting for approval
-	PruneApproved  bool              `json:"prune_approved"`
-	LastScan       time.Time         `json:"last_scan"`
-	LastScanError  string            `json:"last_scan_error"`
-	LastImageCheck time.Time         `json:"last_image_check"`
+	Processed map[string]string `json:"processed"` // stack -> last handled commit
+	Paused    map[string]bool   `json:"paused"`    // stacks excluded from deploys/updates
+	Adopted   map[string]bool   `json:"adopted"`   // unmanaged stacks the controller may take over
+	Force     map[string]bool   `json:"force"`     // redeploy requested via CLI or GitHub
+	// Redeploys: stack -> pending redeploy requested on GitHub, whose
+	// deployment the redeploy reports to. RedeployHandled: repo -> ID of the
+	// newest redeploy deployment already handled.
+	Redeploys       map[string]Redeploy `json:"redeploys"`
+	RedeployHandled map[string]int64    `json:"redeploy_handled"`
+	PendingRemoval  map[string]int      `json:"pending_removal"` // stack -> consecutive scans wanting removal
+	Orphaned        map[string]string   `json:"orphaned"`        // stack -> reason it is kept
+	PruneBlocked    []string            `json:"prune_blocked"`   // removals waiting for approval
+	PruneApproved   bool                `json:"prune_approved"`
+	LastScan        time.Time           `json:"last_scan"`
+	LastScanError   string              `json:"last_scan_error"`
+	LastImageCheck  time.Time           `json:"last_image_check"`
 	// SecretVersions: "stack|secret" -> version of a driver secret the
 	// stack's services last (re)started with.
 	SecretVersions  map[string]string `json:"secret_versions"`
 	LastSecretCheck time.Time         `json:"last_secret_check"`
 	// BindHistory: bind rule root -> sources that were ever mounted writable.
 	BindHistory map[string][]string `json:"bind_history"`
+}
+
+// Redeploy is a redeploy requested by creating a GitHub deployment.
+type Redeploy struct {
+	Repo string `json:"repo"`
+	ID   int64  `json:"id"`  // the requested deployment
+	Sha  string `json:"sha"` // the commit it was requested for
+	By   string `json:"by"`
 }
 
 // Store is a mutex-protected, file-backed state.
@@ -65,6 +78,12 @@ func (s *Store) init() {
 	}
 	if s.d.Force == nil {
 		s.d.Force = map[string]bool{}
+	}
+	if s.d.Redeploys == nil {
+		s.d.Redeploys = map[string]Redeploy{}
+	}
+	if s.d.RedeployHandled == nil {
+		s.d.RedeployHandled = map[string]int64{}
 	}
 	if s.d.PendingRemoval == nil {
 		s.d.PendingRemoval = map[string]int{}

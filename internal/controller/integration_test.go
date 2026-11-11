@@ -182,6 +182,8 @@ func (f *fakeGit) DeploymentStatus(_ string, _ int64, state, desc, _, _ string) 
 	return nil
 }
 
+func (f *fakeGit) RedeployRequests(string) ([]gh.DeploymentRequest, error) { return nil, nil }
+
 func (f *fakeGit) MarkEnvironmentInactive(repo, env, desc string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
