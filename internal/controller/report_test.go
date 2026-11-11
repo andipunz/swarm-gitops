@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"testing"
@@ -21,7 +22,12 @@ type stubGit struct {
 	checkRunCompleted bool
 	runs              []gh.CheckRunStatus // returned by CommitCheckRuns
 	runsErr           error
+	redeploys         []gh.DeploymentRequest // returned by RedeployRequests
+	deployments       int                    // created by CreateDeployment
+	statuses          []string               // "<id> <state>: <description>"
 }
+
+func (s *stubGit) RedeployRequests(string) ([]gh.DeploymentRequest, error) { return s.redeploys, nil }
 
 func (s *stubGit) CommitCheckRuns(string, string) ([]gh.CheckRunStatus, error) {
 	return s.runs, s.runsErr
@@ -46,10 +52,12 @@ func (s *stubGit) CompleteCheckRun(repo string, id int64, conclusion, title, sum
 }
 
 func (s *stubGit) CreateDeployment(repo, sha, env, desc string, production, transient bool) (int64, error) {
-	return 0, nil
+	s.deployments++
+	return int64(1000 + s.deployments), nil
 }
 
 func (s *stubGit) DeploymentStatus(repo string, id int64, state, desc, logURL, envURL string) error {
+	s.statuses = append(s.statuses, fmt.Sprintf("%d %s: %s", id, state, desc))
 	return nil
 }
 

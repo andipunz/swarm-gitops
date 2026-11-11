@@ -38,6 +38,7 @@ type Git interface {
 	CreateDeployment(repo, sha, env, description string, production, transient bool) (int64, error)
 	DeploymentStatus(repo string, id int64, state, description, logURL, envURL string) error
 	MarkEnvironmentInactive(repo, env, description string) error
+	RedeployRequests(repo string) ([]gh.DeploymentRequest, error)
 }
 
 // Controller is the reconcile loop.
@@ -126,6 +127,7 @@ func (c *Controller) Scan(ctx context.Context) {
 	}
 	c.reportConfigErrors(plan)
 	c.reportSkipped(plan)
+	c.collectRedeployRequests(plan)
 	c.removeStacks(ctx, plan)
 
 	sem := make(chan struct{}, c.cfg.Concurrency)
@@ -700,6 +702,7 @@ func (c *Controller) removeStacks(ctx context.Context, p *Plan) {
 			delete(d.PendingRemoval, stack)
 			delete(d.Processed, stack)
 			delete(d.Force, stack)
+			delete(d.Redeploys, stack)
 		})
 		mu.Unlock()
 	}

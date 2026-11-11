@@ -1,0 +1,57 @@
+# "Run workflow" button under Actions → redeploy: restarts an environment's
+# stack with the commit and configuration it already deploys (like an empty
+# commit, without one). It asks swarm-gitops via a GitHub deployment with
+# task "redeploy" and waits for the result. Anyone with write access can run it.
+name: redeploy
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to redeploy
+        type: choice
+        options: [prod, staging]
+permissions:
+  contents: read
+  deployments: write
+concurrency: redeploy-${{ inputs.environment }}
+jobs:
+  redeploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      ENVIRONMENT: ${{ inputs.environment }}
+    steps:
+      - name: Request the redeploy
+        id: request
+        run: |
+          # The branch the environment deploys from, per .swarm/deploy.yml on the default branch.
+          ref=$(gh api "repos/$GITHUB_REPOSITORY/contents/.swarm/deploy.yml" -H "Accept: application/vnd.github.raw" |
+            yq ".environments[\"$ENVIRONMENT\"].ref // \"\"")
+          if [ -z "$ref" ]; then
+            echo "::error::Environment $ENVIRONMENT is not in .swarm/deploy.yml (or has no ref)"; exit 1
+          fi
+          case "$ref" in *[*?[]*)
+            echo "::error::$ENVIRONMENT deploys a branch pattern ($ref); ask an admin (swarm-gitops redeploy <stack>)"; exit 1;;
+          esac
+          id=$(jq -n --arg ref "$ref" --arg env "$ENVIRONMENT" --arg by "$GITHUB_ACTOR" '{
+              ref: $ref, environment: $env, task: "redeploy", auto_merge: false, required_contexts: [],
+              payload: {requested_by: $by}, description: ("Redeploy requested by " + $by)
+            }' | gh api "repos/$GITHUB_REPOSITORY/deployments" --input - --jq .id)
+          echo "id=$id" >> "$GITHUB_OUTPUT"
+          echo "Requested redeploy of $ENVIRONMENT ($ref), deployment $id"
+      - name: Wait for swarm-gitops
+        env:
+          ID: ${{ steps.request.outputs.id }}
+        run: |
+          last=""
+          while true; do
+            s=$(gh api "repos/$GITHUB_REPOSITORY/deployments/$ID/statuses?per_page=1" --jq '.[0] // {} | "\(.state // "pending")\t\(.description // "")"')
+            [ "$s" != "$last" ] && echo "$s" && last=$s
+            case "${s%%$'\t'*}" in
+              success) exit 0;;
+              inactive) echo "::warning::Superseded: ${s#*$'\t'}"; exit 0;;
+              failure|error) echo "::error::${s#*$'\t'}"; exit 1;;
+            esac
+            sleep 10
+          done

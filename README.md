@@ -121,6 +121,19 @@ An empty commit (same content as its parent) forces a rolling restart of the
 stack, even if nothing changed. Normal commits that don't change the rendered
 stack (README edits, code outside `.swarm/`) don't restart anything.
 
+Without a commit: copy
+[`examples/einsatz-app/.github/workflows/redeploy.yml`](examples/einsatz-app/.github/workflows/redeploy.yml)
+into your repo (adjust the environment list). *Actions → redeploy → Run
+workflow* then restarts the chosen environment and waits for the result. Under
+the hood it creates a GitHub deployment with task `redeploy` for the branch the
+environment deploys from; the controller picks it up on its next scan and
+reports the rollout to that deployment.
+
+- Anyone with write access to the repo can do this, but it only restarts what
+  already deploys from git: same commit, same configuration.
+- Paused stacks refuse it. Environments with a branch pattern (`sandbox/*`)
+  aren't supported by the workflow; use the CLI.
+
 A stack removed outside swarm-gitops (`docker stack rm`, or another tool
 deleting a stack of the same name) is deployed again on the next scan, once
 per commit; the check run says so. To take a stack down on purpose, `pause`
@@ -537,8 +550,9 @@ On top of that:
   them by content hash. A changed file creates a new config and rolls the
   service. Unused old configs are pruned; the previous one is kept for rollbacks.
 - **Rate limits:** a scan costs 1 GraphQL query per 50 repos, plus 1 per repo
-  that has a `deploy.yml`. REST reads use ETags; unchanged responses don't
-  count against the limit.
+  that has a `deploy.yml`, plus 1 REST read per deploying repo for redeploy
+  requests. REST reads use ETags; unchanged responses don't count against the
+  limit.
 - **Metrics:** set `METRICS_ADDR` (e.g. `:9090`) to expose a read-only
   Prometheus endpoint on its own listener — deliberately separate from the
   admin API, which stays Unix-socket-only. It reports per-service desired/

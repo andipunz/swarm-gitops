@@ -23,11 +23,17 @@ type run struct {
 	check    *gh.CheckRun
 	depID    int64
 	finished bool
-	note     string // shown under the header, e.g. that CI was still running
+	note     string          // shown under the header, e.g. that CI was still running
+	req      *state.Redeploy // redeploy requested on GitHub, reported to its deployment
 }
 
 func newRun(c *Controller, t Target, log *slog.Logger) *run {
 	r := &run{c: c, t: t, log: log}
+	c.st.View(func(d *state.Data) {
+		if req, ok := d.Redeploys[t.Stack]; ok {
+			r.req = &req
+		}
+	})
 	// The Checks API is GitHub-App-only - a PAT gets a 403 on every single
 	// call, not a permission that can be granted to it. Skip creating one
 	// entirely under token auth instead of warning on every scan; done()
@@ -57,6 +63,13 @@ func (r *run) startDeployment(redeploy bool) {
 	desc := "Deploying " + short(r.t.Branch.Commit)
 	if redeploy {
 		desc = "Redeploying " + short(r.t.Branch.Commit)
+	}
+	if r.req != nil && r.req.Sha == r.t.Branch.Commit {
+		// The requested deployment is for exactly this commit: report to it
+		// instead of adding a second one.
+		r.depID = r.req.ID
+		_ = r.c.git.DeploymentStatus(r.t.Repo, r.depID, "in_progress", desc+" (requested by "+r.req.By+")", r.logURL(), r.t.EnvCfg.URL)
+		return
 	}
 	prod := r.t.Env == "prod" || r.t.Env == "production"
 	id, err := r.c.git.CreateDeployment(r.t.Repo, r.t.Branch.Commit, r.t.GitHubEnv, desc, prod, r.t.EnvCfg.IsGlob())
@@ -90,6 +103,16 @@ func (r *run) done(conclusion, title, summary, text string) {
 		}
 		_ = r.c.git.DeploymentStatus(r.t.Repo, r.depID, state, title, r.logURL(), r.t.EnvCfg.URL)
 	}
+	if r.req != nil && r.req.ID != r.depID {
+		// Requested for another commit (the branch moved on meanwhile), or
+		// finished before a deployment started (policy violation, ...).
+		state := "failure"
+		if conclusion == "success" {
+			state = "success"
+		}
+		desc := fmt.Sprintf("%s (commit %s)", title, short(r.t.Branch.Commit))
+		_ = r.c.git.DeploymentStatus(r.req.Repo, r.req.ID, state, desc, r.logURL(), "")
+	}
 	key := r.t.Stack + "@" + r.t.Branch.Commit
 	r.c.cacheMu.Lock()
 	delete(r.c.attempts, key)
@@ -104,6 +127,9 @@ func (r *run) done(conclusion, title, summary, text string) {
 		_ = r.c.st.Update(func(d *state.Data) {
 			d.Processed[r.t.Stack] = r.t.Branch.Commit
 			delete(d.Force, r.t.Stack)
+			if r.req != nil && d.Redeploys[r.t.Stack].ID == r.req.ID {
+				delete(d.Redeploys, r.t.Stack)
+			}
 		})
 	}
 	if r.check == nil {
