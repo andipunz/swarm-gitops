@@ -23,6 +23,8 @@ type Config struct {
 	RequireProtected []string      // REQUIRE_PROTECTED: envs that may only deploy from protected branches
 	ScanInterval     time.Duration // SCAN_INTERVAL
 	ImageInterval    time.Duration // IMAGE_INTERVAL (0 disables automatic image updates)
+	SecretInterval   time.Duration // SECRET_INTERVAL (0 disables restarts on changed driver secrets)
+	PluginDir        string        // PLUGIN_DIR: the host's /run/docker/plugins, for secret driver sockets
 	RolloutTimeout   time.Duration // ROLLOUT_TIMEOUT
 	// CIWait is how long a commit waits for its own CI (check runs other than
 	// swarm-gitops') to finish before it is deployed anyway; 0 deploys
@@ -57,6 +59,7 @@ func FromEnv() (*Config, error) {
 		PolicyFile:       os.Getenv("POLICY_FILE"),
 		Socket:           env("SOCKET", "/run/swarm-gitops/api.sock"),
 		DockerConfig:     os.Getenv("DOCKER_CONFIG"),
+		PluginDir:        env("PLUGIN_DIR", "/run/docker/plugins"),
 		// No built-in default: it must name your own image, not any specific
 		// project's. Usually the same image running this controller (see
 		// deploy/stack.yml).
@@ -78,6 +81,7 @@ func FromEnv() (*Config, error) {
 	}{
 		{&c.ScanInterval, "SCAN_INTERVAL", "1m", false},
 		{&c.ImageInterval, "IMAGE_INTERVAL", "2m", true},
+		{&c.SecretInterval, "SECRET_INTERVAL", "2m", true},
 		{&c.RolloutTimeout, "ROLLOUT_TIMEOUT", "5m", false},
 		{&c.CIWait, "CI_WAIT_TIMEOUT", "30m", true},
 		{&c.PrepTimeout, "PREP_TIMEOUT", "2m", false},

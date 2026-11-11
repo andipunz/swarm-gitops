@@ -33,6 +33,9 @@ type Service struct {
 				Configs []struct {
 					ConfigName string `json:"ConfigName"`
 				} `json:"Configs"`
+				Secrets []struct {
+					SecretName string `json:"SecretName"`
+				} `json:"Secrets"`
 			} `json:"ContainerSpec"`
 		} `json:"TaskTemplate"`
 	} `json:"Spec"`
@@ -347,6 +350,62 @@ func (d *Docker) attachLogs(ctx context.Context, reports []ServiceReport) {
 			reports[i].Logs = d.Logs(ctx, reports[i].Name, 30)
 		}
 	}
+}
+
+// Secret is the subset of `docker secret inspect` we use.
+type Secret struct {
+	ID   string `json:"ID"`
+	Spec struct {
+		Name   string            `json:"Name"`
+		Labels map[string]string `json:"Labels"`
+		Driver *struct {
+			Name string `json:"Name"`
+		} `json:"Driver"`
+	} `json:"Spec"`
+}
+
+// DriverSecrets returns every secret whose value comes from a secret driver
+// plugin, by name.
+func (d *Docker) DriverSecrets(ctx context.Context) (map[string]Secret, error) {
+	out, err := d.run(ctx, 30*time.Second, "secret", "ls", "-q")
+	if err != nil {
+		return nil, err
+	}
+	ids := strings.Fields(string(out))
+	res := map[string]Secret{}
+	if len(ids) == 0 {
+		return res, nil
+	}
+	if out, err = d.run(ctx, 60*time.Second, append([]string{"secret", "inspect"}, ids...)...); err != nil {
+		return nil, err
+	}
+	var secrets []Secret
+	if err := json.Unmarshal(out, &secrets); err != nil {
+		return nil, err
+	}
+	for _, s := range secrets {
+		if s.Spec.Driver != nil && s.Spec.Driver.Name != "" {
+			res[s.Spec.Name] = s
+		}
+	}
+	return res, nil
+}
+
+// PluginSocket returns the path of an enabled plugin's socket below dir
+// (the host's /run/docker/plugins, mounted into the controller).
+func (d *Docker) PluginSocket(ctx context.Context, dir, plugin string) (string, error) {
+	out, err := d.run(ctx, 30*time.Second, "plugin", "inspect", "--format", "{{.Id}} {{.Enabled}} {{.Config.Interface.Socket}}", plugin)
+	if err != nil {
+		return "", err
+	}
+	f := strings.Fields(string(out))
+	if len(f) != 3 || f[0] == "" || f[2] == "" {
+		return "", fmt.Errorf("plugin %s: unexpected inspect output %q", plugin, strings.TrimSpace(string(out)))
+	}
+	if f[1] != "true" {
+		return "", fmt.Errorf("plugin %s is disabled", plugin)
+	}
+	return dir + "/" + f[0] + "/" + f[2], nil
 }
 
 // AllServices returns every service on the Swarm (managed or not).

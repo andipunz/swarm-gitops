@@ -22,6 +22,7 @@ services:
       REQUIRE_PROTECTED: prod                     # envs that need a protected branch
       SCAN_INTERVAL: 1m
       IMAGE_INTERVAL: 2m                          # 0 disables automatic image updates
+      SECRET_INTERVAL: 2m                         # restart services whose driver secrets changed; 0 disables
       ROLLOUT_TIMEOUT: 5m
       CI_WAIT_TIMEOUT: 30m                        # wait for the commit's CI before deploying; 0 disables
       PRUNE_ENABLED: "true"
@@ -34,6 +35,7 @@ services:
       # METRICS_ADDR: ":9090"   # read-only Prometheus endpoint, not published - see README's "Metrics"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - /run/docker/plugins:/run/docker/plugins:ro   # secret driver sockets (SECRET_INTERVAL)
       - data:/data
     secrets:
       - swarm_gitops_app_key

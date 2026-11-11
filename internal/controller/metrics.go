@@ -32,14 +32,15 @@ type ServiceImage struct {
 
 // MetricsSnapshot is the point-in-time data exposed at /metrics.
 type MetricsSnapshot struct {
-	Stacks         []StackReplicas
-	Sources        []StackSource
-	Images         []ServiceImage
-	LastScan       time.Time
-	LastScanError  bool
-	LastImageCheck time.Time
-	Orphaned       int
-	PruneBlocked   int
+	Stacks          []StackReplicas
+	Sources         []StackSource
+	Images          []ServiceImage
+	LastScan        time.Time
+	LastScanError   bool
+	LastImageCheck  time.Time
+	LastSecretCheck time.Time
+	Orphaned        int
+	PruneBlocked    int
 }
 
 // Metrics gathers the current data for the /metrics endpoint. Every value
@@ -74,6 +75,7 @@ func (c *Controller) Metrics(ctx context.Context) (*MetricsSnapshot, error) {
 		m.LastScan = d.LastScan
 		m.LastScanError = d.LastScanError != ""
 		m.LastImageCheck = d.LastImageCheck
+		m.LastSecretCheck = d.LastSecretCheck
 		m.Orphaned = len(d.Orphaned)
 		m.PruneBlocked = len(d.PruneBlocked)
 	})

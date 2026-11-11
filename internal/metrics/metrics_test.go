@@ -18,11 +18,12 @@ func TestWrite(t *testing.T) {
 		Sources: []controller.StackSource{{Stack: "app-prod", Repo: "app", Env: "prod", Branch: "main", Commit: "abc123"}},
 		Images: []controller.ServiceImage{{Stack: "app-prod", Service: "app-prod_web", Image: "ghcr.io/org/app:main@sha256:feed",
 			Revision: "8db45e6", Source: "https://github.com/org/app", Version: "main"}},
-		LastScan:       time.Unix(1700000000, 0),
-		LastScanError:  true,
-		LastImageCheck: time.Unix(1700000100, 0),
-		Orphaned:       2,
-		PruneBlocked:   1,
+		LastScan:        time.Unix(1700000000, 0),
+		LastScanError:   true,
+		LastImageCheck:  time.Unix(1700000100, 0),
+		LastSecretCheck: time.Unix(1700000200, 0),
+		Orphaned:        2,
+		PruneBlocked:    1,
 	}
 	rec := httptest.NewRecorder()
 	write(rec, m)
@@ -37,6 +38,7 @@ func TestWrite(t *testing.T) {
 		"swarm_gitops_last_scan_timestamp_seconds 1700000000",
 		"swarm_gitops_last_scan_error 1",
 		"swarm_gitops_last_image_check_timestamp_seconds 1700000100",
+		"swarm_gitops_last_secret_check_timestamp_seconds 1700000200",
 		"swarm_gitops_orphaned_stacks 2",
 		"swarm_gitops_prune_blocked_stacks 1",
 	}
