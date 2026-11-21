@@ -4,6 +4,8 @@ on:
     branches: [main]
     tags: ["v*"]
   pull_request:
+  # to rebuild by hand, e.g. when a push's run got stuck in GitHub's queue
+  workflow_dispatch:
 
 permissions:
   contents: read
